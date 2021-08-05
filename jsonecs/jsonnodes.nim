@@ -1,19 +1,19 @@
 type
-  JsonNode* = distinct JsonNodeImpl
-  JsonNodeImpl* = uint32
+  JsonNodeId* = distinct JsonNodeIdImpl
+  JsonNodeIdImpl* = uint32
 
 const
   versionBits = 6
   versionMask = 1 shl versionBits - 1
-  indexBits = sizeof(JsonNodeImpl) * 8 - versionBits
+  indexBits = sizeof(JsonNodeIdImpl) * 8 - versionBits
   indexMask = 1 shl indexBits - 1
-  invalidId* = JsonNode(indexMask) # a sentinel value to represent an invalid entity
-  maxJsonNodes* = indexMask
+  invalidId* = JsonNodeId(indexMask) # a sentinel value to represent an invalid entity
+  maxJsonNodeIds* = indexMask
 
-template idx*(n: JsonNode): int = n.int and indexMask
-template version*(n: JsonNode): JsonNodeImpl = n.JsonNodeImpl shr indexBits and versionMask
-template toJsonNode*(idx, v: JsonNodeImpl): JsonNode = JsonNode(v shl indexBits or idx)
+template idx*(n: JsonNodeId): int = n.int and indexMask
+template version*(n: JsonNodeId): JsonNodeIdImpl = n.JsonNodeIdImpl shr indexBits and versionMask
+template toJsonNodeId*(idx, v: JsonNodeIdImpl): JsonNodeId = JsonNodeId(v shl indexBits or idx)
 
-proc `==`*(a, b: JsonNode): bool {.borrow.}
-proc `$`*(n: JsonNode): string =
-  "JsonNode(i: " & $n.idx & ", v: " & $n.version & ")"
+proc `==`*(a, b: JsonNodeId): bool {.borrow.}
+proc `$`*(n: JsonNodeId): string =
+  "JsonNodeId(i: " & $n.idx & ", v: " & $n.version & ")"
