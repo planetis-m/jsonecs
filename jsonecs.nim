@@ -44,10 +44,7 @@ type
     # Mappings
     hierarchies: seq[Hierarchy]
 
-proc resize(old: int): int {.inline.} =
-  if old <= 0: result = 4
-  elif old < 65536: result = old * 2
-  else: result = old * 3 div 2
+proc `=copy`*(dest: var JsonTree; source: JsonTree) {.error.}
 
 proc createJsonNode(x: var JsonTree): JsonNode =
   result = x.signatures.incl({})
@@ -105,10 +102,9 @@ proc delete*(x: var JsonTree, n: JsonNode) =
 template mixBody(has) =
   x.signatures[n].incl has
 
-proc reserve[T](x: var seq[T]; needed: int) =
+proc reserve[T](x: var seq[T]; needed: int) {.inline.} =
   if needed > x.len:
-    let newLen = max(needed, resize(x.len))
-    grow(x, newLen, default(T))
+    grow(x, needed, default(T))
 
 proc mixHierarchy(x: var JsonTree, n: JsonNode, parent = invalidId) =
   mixBody HierarchyPriv
