@@ -28,7 +28,7 @@ proc raiseRangeDefect() {.noinline, noreturn.} =
 
 proc incl*[T](x: var SlotTable[T], value: T): JsonNodeId =
   when compileOption("boundChecks"):
-    if x.len + 1 == maxJsonNodeIds:
+    if x.len + 1 == maxJsonNodes:
       raiseRangeDefect()
   let idx = x.freeHead
   if idx < x.slots.len:

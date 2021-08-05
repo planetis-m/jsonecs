@@ -8,7 +8,7 @@ const
   indexBits = sizeof(JsonNodeIdImpl) * 8 - versionBits
   indexMask = 1 shl indexBits - 1
   invalidId* = JsonNodeId(indexMask) # a sentinel value to represent an invalid entity
-  maxJsonNodeIds* = indexMask
+  maxJsonNodes* = indexMask
 
 template idx*(n: JsonNodeId): int = n.int and indexMask
 template version*(n: JsonNodeId): JsonNodeIdImpl = n.JsonNodeIdImpl shr indexBits and versionMask

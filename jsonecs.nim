@@ -31,7 +31,7 @@ type
 
   Hierarchy = object
     head, tail: JsonNodeId
-    prev, next: JsonNodeId
+    next: JsonNodeId
     parent: JsonNodeId
 
   JsonTree* = ref object
@@ -48,7 +48,7 @@ type
     id: JsonNodeId
     k: JsonTree
 
-proc createJsonNodeId(x: JsonTree): JsonNodeId =
+proc getJsonNodeId(x: JsonTree): JsonNodeId =
   result = x.signatures.incl({})
 
 iterator queryAll(x: JsonTree, parent: JsonNodeId, query: set[JsonNodeKind]): JsonNodeId =
@@ -59,12 +59,12 @@ iterator queryAll(x: JsonTree, parent: JsonNodeId, query: set[JsonNodeKind]): Js
     let n = frontier.pop()
     if x.signatures[n] * query == query:
       yield n
-    var childId = hierarchy.tail
+    var childId = hierarchy.head
     while childId != invalidId:
       template childHierarchy: untyped = x.hierarchies[childId.idx]
 
       frontier.add(childId)
-      childId = childHierarchy.prev
+      childId = childHierarchy.next
 
 template `?=`(name, value): bool = (let name = value; name != invalidId)
 proc append(x: JsonTree, parentId, n: JsonNodeId) =
@@ -73,7 +73,6 @@ proc append(x: JsonTree, parentId, n: JsonNodeId) =
   template tailSibling: untyped = x.hierarchies[tailSiblingId.idx]
 
   hierarchy.next = invalidId
-  hierarchy.prev = parent.tail
   if tailSiblingId ?= parent.tail:
     assert tailSibling.next == invalidId
     tailSibling.next = n
@@ -84,13 +83,14 @@ proc removeNode(x: JsonTree, n: JsonNodeId) =
   template hierarchy: untyped = x.hierarchies[n.idx]
   template parent: untyped = x.hierarchies[parentId.idx]
   template nextSibling: untyped = x.hierarchies[nextSiblingId.idx]
-  template prevSibling: untyped = x.hierarchies[prevSiblingId.idx]
+  template tailSibling: untyped = x.hierarchies[tailSiblingId.idx]
 
   if parentId ?= hierarchy.parent:
-    if n == parent.tail: parent.tail = hierarchy.prev
-    if n == parent.head: parent.head = hierarchy.next
-  if nextSiblingId ?= hierarchy.next: nextSibling.prev = hierarchy.prev
-  if prevSiblingId ?= hierarchy.prev: prevSibling.next = hierarchy.next
+    if n == parent.head:
+      parent.head = hierarchy.next
+      if tailSiblingId ?= parent.tail:
+        if tailSibling.next == n:
+          tailSibling.next = parent.head
 
 proc delete*(x: JsonTree, n: JsonNodeId) =
   ## Deletes `x[key]`.
@@ -111,7 +111,7 @@ proc mixHierarchy(x: JsonTree, n: JsonNodeId, parent = invalidId) =
   mixBody HierarchyPriv
   reserve(x.hierarchies, n.idx + 1)
   x.hierarchies[n.idx] = Hierarchy(
-    head: invalidId, tail: invalidId, prev: invalidId, next: invalidId,
+    head: invalidId, tail: invalidId, next: invalidId,
     parent: parent)
   if parent != invalidId: append(x, parent, n)
 
@@ -304,12 +304,12 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
       parent: JsonNodeId): JsonNodeId =
   case p.tok
   of tkString:
-    result = createJsonNodeId(x)
+    result = getJsonNodeId(x)
     mixJString(x, result, p.a)
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkInt:
-    result = createJsonNodeId(x)
+    result = getJsonNodeId(x)
     if rawIntegers:
       mixJRawNumber(x, result, p.a)
     else:
@@ -320,7 +320,7 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkFloat:
-    result = createJsonNodeId(x)
+    result = getJsonNodeId(x)
     if rawFloats:
       mixJRawNumber(x, result, p.a)
     else:
@@ -331,28 +331,28 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkTrue:
-    result = createJsonNodeId(x)
+    result = getJsonNodeId(x)
     mixJBool(x, result, true)
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkFalse:
-    result = createJsonNodeId(x)
+    result = getJsonNodeId(x)
     mixJBool(x, result, false)
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkNull:
-    result = createJsonNodeId(x)
+    result = getJsonNodeId(x)
     mixJNull(x, result)
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkCurlyLe:
-    result = createJsonNodeId(x)
+    result = getJsonNodeId(x)
     mixJObject(x, result, parent)
     discard getTok(p)
     while p.tok != tkCurlyRi:
       if p.tok != tkString:
         raiseParseErr(p, "string literal as key")
-      let key = createJsonNodeId(x)
+      let key = getJsonNodeId(x)
       mixJKey(x, key, p.a, result)
       discard getTok(p)
       eat(p, tkColon)
@@ -361,7 +361,7 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
       discard getTok(p)
     eat(p, tkCurlyRi)
   of tkBracketLe:
-    result = createJsonNodeId(x)
+    result = getJsonNodeId(x)
     mixJArray(x, result, parent)
     discard getTok(p)
     while p.tok != tkBracketRi:
