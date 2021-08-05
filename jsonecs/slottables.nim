@@ -1,47 +1,47 @@
-import entities
+import jsonnodes
 
 type
   Entry*[T] = tuple
-    e: Entity
+    n: JsonNode
     value: T
 
   SlotTable*[T] = object
     freeHead: int
-    slots: seq[Entity]
+    slots: seq[JsonNode]
     data: seq[Entry[T]]
 
 proc initSlotTableOfCap*[T](capacity: Natural): SlotTable[T] =
   result = SlotTable[T](
     data: newSeqOfCap[Entry[T]](capacity),
-    slots: newSeqOfCap[Entity](capacity),
+    slots: newSeqOfCap[JsonNode](capacity),
     freeHead: 0
   )
 
 proc len*[T](x: SlotTable[T]): int {.inline.} =
   x.data.len
 
-proc contains*[T](x: SlotTable[T], e: Entity): bool {.inline.} =
-  e.idx < x.slots.len and x.slots[e.idx].version == e.version
+proc contains*[T](x: SlotTable[T], n: JsonNode): bool {.inline.} =
+  n.idx < x.slots.len and x.slots[n.idx].version == n.version
 
 proc raiseRangeDefect() {.noinline, noreturn.} =
   raise newException(RangeDefect, "SlotTable number of elements overflow")
 
-proc incl*[T](x: var SlotTable[T], value: T): Entity =
+proc incl*[T](x: var SlotTable[T], value: T): JsonNode =
   when compileOption("boundChecks"):
-    if x.len + 1 == maxEntities:
+    if x.len + 1 == maxJsonNodes:
       raiseRangeDefect()
   let idx = x.freeHead
   if idx < x.slots.len:
     template slot: untyped = x.slots[idx]
     let occupiedVersion = slot.version or 1
-    result = toEntity(idx.EntityImpl, occupiedVersion)
-    x.data.add((e: result, value: value))
+    result = toJsonNode(idx.JsonNodeImpl, occupiedVersion)
+    x.data.add((n: result, value: value))
     x.freeHead = slot.idx
-    slot = toEntity(x.data.high.EntityImpl, occupiedVersion)
+    slot = toJsonNode(x.data.high.JsonNodeImpl, occupiedVersion)
   else:
-    result = toEntity(idx.EntityImpl, 1)
-    x.data.add((e: result, value: value))
-    x.slots.add(toEntity(x.data.high.EntityImpl, 1))
+    result = toJsonNode(idx.JsonNodeImpl, 1)
+    x.data.add((n: result, value: value))
+    x.slots.add(toJsonNode(x.data.high.JsonNodeImpl, 1))
     x.freeHead = x.slots.len
 
 proc freeSlot[T](x: var SlotTable[T], slotIdx: int): int {.inline.} =
@@ -49,7 +49,7 @@ proc freeSlot[T](x: var SlotTable[T], slotIdx: int): int {.inline.} =
   # was stored in the slot.
   template slot: untyped = x.slots[slotIdx]
   result = slot.idx
-  slot = toEntity(x.freeHead.EntityImpl, slot.version + 1)
+  slot = toJsonNode(x.freeHead.JsonNodeImpl, slot.version + 1)
   x.freeHead = slotIdx
 
 proc delFromSlot[T](x: var SlotTable[T], slotIdx: int) {.inline.} =
@@ -61,32 +61,32 @@ proc delFromSlot[T](x: var SlotTable[T], slotIdx: int) {.inline.} =
   x.data.shrink(x.data.high)
   # Did something take our place? Update its slot to new position.
   if x.data.len > valueIdx:
-    let kIdx = x.data[valueIdx].e.idx
+    let kIdx = x.data[valueIdx].n.idx
     template slot: untyped = x.slots[kIdx]
-    slot = toEntity(valueIdx.EntityImpl, slot.version)
+    slot = toJsonNode(valueIdx.JsonNodeImpl, slot.version)
 
-proc del*[T](x: var SlotTable[T], e: Entity) =
-  if x.contains(e):
-    x.delFromSlot(e.idx)
+proc del*[T](x: var SlotTable[T], n: JsonNode) =
+  if x.contains(n):
+    x.delFromSlot(n.idx)
 
 proc clear*[T](x: var SlotTable[T]) =
   x.freeHead = 0
   x.slots.shrink(0)
   x.data.shrink(0)
 
-template get(x, e) =
-  template slot: untyped = x.slots[e.idx]
-  if e.idx >= x.slots.len or slot.version != e.version:
-    raise newException(KeyError, "Entity not in SlotTable")
+template get(x, n) =
+  template slot: untyped = x.slots[n.idx]
+  if n.idx >= x.slots.len or slot.version != n.version:
+    raise newException(KeyError, "JsonNode not in SlotTable")
   # This is safe because we only store valid indices.
   let idx = slot.idx
   result = x.data[idx].value
 
-proc `[]`*[T](x: SlotTable[T], e: Entity): T =
-  get(x, e)
+proc `[]`*[T](x: SlotTable[T], n: JsonNode): T =
+  get(x, n)
 
-proc `[]`*[T](x: var SlotTable[T], e: Entity): var T =
-  get(x, e)
+proc `[]`*[T](x: var SlotTable[T], n: JsonNode): var T =
+  get(x, n)
 
 iterator pairs*[T](x: SlotTable[T]): Entry[T] =
   for i in 0 ..< x.len:

@@ -1,60 +1,65 @@
 import
-  jsonecs / [entities, slottables, heaparrays],
+  jsonecs / [jsonnodes, slottables],
   std / [parsejson, streams, strutils]
-export entities
+export jsonnodes
 
 type
-  HasComponent = enum
-    HasJNull
-    HasJBool
-    HasJInt
-    HasJFloat
-    HasJString
-    HasJObject
-    HasJArray
-    HasJKey
-    HasJRawNumber
-    HasHierarchy
+  JsonNodeKind* = enum
+    JNull
+    JBool
+    JInt
+    JFloat
+    JString
+    JObject
+    JArray
+    JKey
+    JRawNumber
+    HierarchyPriv
 
-  JBool = object
+  JBoolImpl = object
     bval: bool
 
-  JInt = object
+  JIntImpl = object
     num: BiggestInt
 
-  JFloat = object
+  JFloatImpl = object
     fnum: float
 
-  JString = object
+  JStringImpl = object
     str: string
     isUnquoted: bool
 
   Hierarchy = object
-    head: Entity
-    prev, next: Entity
-    parent: Entity
+    head, tail: JsonNode
+    prev, next: JsonNode
+    parent: JsonNode
 
   JsonTree* = object
-    signatures: SlotTable[set[HasComponent]]
+    signatures: SlotTable[set[JsonNodeKind]]
     # Atoms
-    jbools: Array[JBool]
-    jints: Array[JInt]
-    jfloats: Array[JFloat]
-    jstrings: Array[JString]
+    jbools: seq[JBoolImpl]
+    jints: seq[JIntImpl]
+    jfloats: seq[JFloatImpl]
+    jstrings: seq[JStringImpl]
     # Mappings
-    hierarchies: Array[Hierarchy]
+    hierarchies: seq[Hierarchy]
 
-proc createEntity(x: var JsonTree): Entity =
+proc resize(old: int): int {.inline.} =
+  if old <= 0: result = 4
+  elif old < 65536: result = old * 2
+  else: result = old * 3 div 2
+
+proc createJsonNode(x: var JsonTree): JsonNode =
   result = x.signatures.incl({})
 
-iterator queryAll(x: JsonTree, parent: Entity, query: set[HasComponent]): Entity =
-  template hierarchy: untyped = x.hierarchies[e.idx]
+iterator queryAll(x: JsonTree, parent: JsonNode, query: set[JsonNodeKind]): JsonNode =
+  template hierarchy: untyped = x.hierarchies[n.idx]
 
   var frontier = @[parent]
   while frontier.len > 0:
-    let e = frontier.pop()
-    if x.signatures[e] * query == query:
-      yield e
+    let n = frontier.pop()
+    if x.signatures[n] * query == query:
+      yield n
     var childId = hierarchy.head
     while childId != invalidId:
       template childHierarchy: untyped = x.hierarchies[childId.idx]
@@ -63,89 +68,123 @@ iterator queryAll(x: JsonTree, parent: Entity, query: set[HasComponent]): Entity
       childId = childHierarchy.next
 
 template `?=`(name, value): bool = (let name = value; name != invalidId)
-proc prepend(x: var JsonTree, parentId, e: Entity) =
-  template hierarchy: untyped = x.hierarchies[e.idx]
+proc append(x: var JsonTree, parentId, n: JsonNode) =
+  template hierarchy: untyped = x.hierarchies[n.idx]
   template parent: untyped = x.hierarchies[parentId.idx]
-  template headSibling: untyped = x.hierarchies[headSiblingId.idx]
+  template tailSibling: untyped = x.hierarchies[tailSiblingId.idx]
 
-  hierarchy.prev = invalidId
-  hierarchy.next = parent.head
-  if headSiblingId ?= parent.head:
-    assert headSibling.prev == invalidId
-    headSibling.prev = e
-  parent.head = e
+  hierarchy.next = invalidId
+  hierarchy.prev = parent.tail
+  if tailSiblingId ?= parent.tail:
+    assert tailSibling.next == invalidId
+    tailSibling.next = n
+  parent.tail = n
+  if parent.head == invalidId: parent.head = n
 
-proc removeNode(x: var JsonTree, entity: Entity) =
-  template hierarchy: untyped = x.hierarchies[entity.idx]
+proc removeNode(x: var JsonTree, n: JsonNode) =
+  template hierarchy: untyped = x.hierarchies[n.idx]
   template parent: untyped = x.hierarchies[parentId.idx]
   template nextSibling: untyped = x.hierarchies[nextSiblingId.idx]
   template prevSibling: untyped = x.hierarchies[prevSiblingId.idx]
 
   if parentId ?= hierarchy.parent:
-    if entity == parent.head: parent.head = hierarchy.next
+    if n == parent.tail: parent.tail = hierarchy.prev
+    if n == parent.head: parent.head = hierarchy.next
   if nextSiblingId ?= hierarchy.next: nextSibling.prev = hierarchy.prev
   if prevSiblingId ?= hierarchy.prev: prevSibling.next = hierarchy.next
 
-proc delete*(x: var JsonTree, e: Entity) =
+proc delete*(x: var JsonTree, n: JsonNode) =
   ## Deletes ``x[key]``.
-  var toDelete: seq[Entity]
-  for entity in queryAll(x, e, {HasHierarchy}):
+  var toDelete: seq[JsonNode]
+  for entity in queryAll(x, n, {HierarchyPriv}):
     removeNode(x, entity)
     toDelete.add(entity)
   for entity in toDelete.items:
     x.signatures.del(entity)
 
 template mixBody(has) =
-  x.signatures[e].incl has
+  x.signatures[n].incl has
 
-proc mixHierarchy(x: var JsonTree, e: Entity, parent = invalidId) =
-  mixBody HasHierarchy
-  x.hierarchies[e.idx] = Hierarchy(head: invalidId, prev: invalidId,
-      next: invalidId, parent: parent)
-  if parent != invalidId: prepend(x, parent, e)
+proc reserve[T](x: var seq[T]; needed: int) =
+  if needed > x.len:
+    let newLen = max(needed, resize(x.len))
+    grow(x, newLen, default(T))
 
-proc mixJNull(x: var JsonTree, e: Entity) =
-  mixBody HasJNull
+proc mixHierarchy(x: var JsonTree, n: JsonNode, parent = invalidId) =
+  mixBody HierarchyPriv
+  reserve(x.hierarchies, n.idx + 1)
+  x.hierarchies[n.idx] = Hierarchy(
+    head: invalidId, tail: invalidId, prev: invalidId, next: invalidId,
+    parent: parent)
+  if parent != invalidId: append(x, parent, n)
 
-proc mixJBool(x: var JsonTree, e: Entity, b: bool) =
-  mixBody HasJBool
-  x.jbools[e.idx] = JBool(bval: b)
+proc mixJNull(x: var JsonTree, n: JsonNode) =
+  mixBody JNull
 
-proc mixJInt(x: var JsonTree, e: Entity, n: BiggestInt) =
-  mixBody HasJInt
-  x.jints[e.idx] = JInt(num: n)
+proc mixJBool(x: var JsonTree, n: JsonNode, b: bool) =
+  mixBody JBool
+  reserve(x.jbools, n.idx + 1)
+  x.jbools[n.idx] = JBoolImpl(bval: b)
 
-proc mixJFloat(x: var JsonTree, e: Entity, n: float) =
-  mixBody HasJFloat
-  x.jfloats[e.idx] = JFloat(fnum: n)
+proc mixJInt(x: var JsonTree, n: JsonNode, i: BiggestInt) =
+  mixBody JInt
+  reserve(x.jints, n.idx + 1)
+  x.jints[n.idx] = JIntImpl(num: i)
 
-proc mixJString(x: var JsonTree, e: Entity, s: sink string) =
-  mixBody HasJString
-  x.jstrings[e.idx] = JString(str: s)
+proc mixJFloat(x: var JsonTree, n: JsonNode, f: float) =
+  mixBody JFloat
+  reserve(x.jfloats, n.idx + 1)
+  x.jfloats[n.idx] = JFloatImpl(fnum: f)
 
-proc mixJRawNumber(x: var JsonTree, e: Entity, s: sink string) =
-  mixBody HasJRawNumber
-  mixBody HasJString
-  x.jstrings[e.idx] = JString(str: s, isUnquoted: true)
+proc mixJString(x: var JsonTree, n: JsonNode, s: sink string) =
+  mixBody JString
+  reserve(x.jstrings, n.idx + 1)
+  x.jstrings[n.idx] = JStringImpl(str: s)
 
-proc mixJKey(x: var JsonTree, e: Entity, s: sink string, parent = invalidId) =
-  mixBody HasJKey
-  mixBody HasJString
-  x.jstrings[e.idx] = JString(str: s)
-  mixHierarchy(x, e, parent)
+proc mixJRawNumber(x: var JsonTree, n: JsonNode, s: sink string) =
+  mixBody JString
+  mixBody JRawNumber
+  reserve(x.jstrings, n.idx + 1)
+  x.jstrings[n.idx] = JStringImpl(str: s, isUnquoted: true)
 
-proc mixJObject(x: var JsonTree, e: Entity, parent = invalidId) =
-  mixBody HasJObject
-  mixHierarchy(x, e, parent)
+proc mixJKey(x: var JsonTree, n: JsonNode, s: sink string, parent = invalidId) =
+  mixBody JKey
+  mixBody JString
+  reserve(x.jstrings, n.idx + 1)
+  x.jstrings[n.idx] = JStringImpl(str: s)
+  mixHierarchy(x, n, parent)
 
-proc mixJArray(x: var JsonTree, e: Entity, parent = invalidId) =
-  mixBody HasJArray
-  mixHierarchy(x, e, parent)
+proc mixJObject(x: var JsonTree, n: JsonNode, parent = invalidId) =
+  mixBody JObject
+  mixHierarchy(x, n, parent)
 
-iterator items*(x: JsonTree, e: Entity): Entity =
+proc mixJArray(x: var JsonTree, n: JsonNode, parent = invalidId) =
+  mixBody JArray
+  mixHierarchy(x, n, parent)
+
+proc kind*(x: JsonTree, n: JsonNode): JsonNodeKind =
+  let sign = x.signatures[n]
+  if JNull in sign:
+    result = JNull
+  elif JBool in sign:
+    result = JBool
+  elif JFloat in sign:
+    result = JFloat
+  elif JInt in sign:
+    result = JInt
+  elif JString in sign:
+    result = JString
+  elif JObject in sign:
+    result = JObject
+  elif JArray in sign:
+    result = JArray
+  else:
+    result = JNull
+
+iterator items*(x: JsonTree, n: JsonNode): JsonNode =
   ## Iterator for the items of `x`. `x` has to be a JArray.
-  assert HasJArray in x.signatures[e]
-  template hierarchy: untyped = x.hierarchies[e.idx]
+  assert JArray in x.signatures[n]
+  template hierarchy: untyped = x.hierarchies[n.idx]
 
   var childId = hierarchy.head
   while childId != invalidId:
@@ -154,69 +193,69 @@ iterator items*(x: JsonTree, e: Entity): Entity =
     yield childId
     childId = childHierarchy.next
 
-iterator pairs*(x: JsonTree, e: Entity): (string, Entity) =
+iterator pairs*(x: JsonTree, n: JsonNode): (string, JsonNode) =
   ## Iterator for the pairs of `x`. `x` has to be a JObject.
-  assert HasJObject in x.signatures[e]
-  template hierarchy: untyped = x.hierarchies[e.idx]
+  assert JObject in x.signatures[n]
+  template hierarchy: untyped = x.hierarchies[n.idx]
 
   var childId = hierarchy.head
   while childId != invalidId:
     template childHierarchy: untyped = x.hierarchies[childId.idx]
 
-    assert HasJKey in x.signatures[childId]
+    assert JKey in x.signatures[childId]
     yield (x.jstrings[childId.idx].str, childHierarchy.head)
     childId = childHierarchy.next
 
-proc getStr*(n: JsonTree, e: Entity, default: string = ""): string =
+proc getStr*(x: JsonTree, n: JsonNode, default: string = ""): string =
   ## Retrieves the string value of a `JString JsonTree`.
   ##
   ## Returns ``default`` if ``n`` is not a ``JString``.
-  if HasJString in n.signatures[e]: result = n.jstrings[e.idx].str
+  if JString in x.signatures[n]: result = x.jstrings[n.idx].str
   else: result = default
 
-proc getInt*(n: JsonTree, e: Entity, default: int = 0): int =
+proc getInt*(x: JsonTree, n: JsonNode, default: int = 0): int =
   ## Retrieves the int value of a `JInt JsonTree`.
   ##
   ## Returns ``default`` if ``n`` is not a ``JInt``, or if ``n`` is nil.
-  if HasJInt in n.signatures[e]: result = int(n.jints[e.idx].num)
+  if JInt in x.signatures[n]: result = int(x.jints[n.idx].num)
   else: result = default
 
-proc getBiggestInt*(n: JsonTree, e: Entity, default: BiggestInt = 0): BiggestInt =
+proc getBiggestInt*(x: JsonTree, n: JsonNode, default: BiggestInt = 0): BiggestInt =
   ## Retrieves the BiggestInt value of a `JInt JsonTree`.
   ##
   ## Returns ``default`` if ``n`` is not a ``JInt``, or if ``n`` is nil.
-  if HasJInt in n.signatures[e]: result = n.jints[e.idx].num
+  if JInt in x.signatures[n]: result = x.jints[n.idx].num
   else: result = default
 
-proc getFloat*(n: JsonTree, e: Entity, default: float = 0.0): float =
+proc getFloat*(x: JsonTree, n: JsonNode, default: float = 0.0): float =
   ## Retrieves the float value of a `JFloat JsonTree`.
   ##
   ## Returns ``default`` if ``n`` is not a ``JFloat`` or ``JInt``, or if ``n`` is nil.
-  let sign = n.signatures[e]
-  if HasJFloat in sign:
-    result = n.jfloats[e.idx].fnum
-  elif HasJInt in sign:
-    result = float(n.jints[e.idx].num)
+  let sign = x.signatures[n]
+  if JFloat in sign:
+    result = x.jfloats[n.idx].fnum
+  elif JInt in sign:
+    result = float(x.jints[n.idx].num)
   else:
     result = default
 
-proc getBool*(n: JsonTree, e: Entity, default: bool = false): bool =
+proc getBool*(x: JsonTree, n: JsonNode, default: bool = false): bool =
   ## Retrieves the bool value of a `JBool JsonTree`.
   ##
   ## Returns ``default`` if ``n`` is not a ``JBool``, or if ``n`` is nil.
-  if HasJBool in n.signatures[e]: result = n.jbools[e.idx].bval
+  if JBool in x.signatures[n]: result = x.jbools[n.idx].bval
   else: result = default
 
 proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
-      parent: Entity): Entity =
+      parent: JsonNode): JsonNode =
   case p.tok
   of tkString:
-    result = createEntity(x)
+    result = createJsonNode(x)
     mixJString(x, result, p.a)
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkInt:
-    result = createEntity(x)
+    result = createJsonNode(x)
     if rawIntegers:
       mixJRawNumber(x, result, p.a)
     else:
@@ -227,7 +266,7 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkFloat:
-    result = createEntity(x)
+    result = createJsonNode(x)
     if rawFloats:
       mixJRawNumber(x, result, p.a)
     else:
@@ -238,28 +277,28 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkTrue:
-    result = createEntity(x)
+    result = createJsonNode(x)
     mixJBool(x, result, true)
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkFalse:
-    result = createEntity(x)
+    result = createJsonNode(x)
     mixJBool(x, result, false)
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkNull:
-    result = createEntity(x)
+    result = createJsonNode(x)
     mixJNull(x, result)
     mixHierarchy(x, result, parent)
     discard getTok(p)
   of tkCurlyLe:
-    result = createEntity(x)
+    result = createJsonNode(x)
     mixJObject(x, result, parent)
     discard getTok(p)
     while p.tok != tkCurlyRi:
       if p.tok != tkString:
         raiseParseErr(p, "string literal as key")
-      let key = createEntity(x)
+      let key = createJsonNode(x)
       mixJKey(x, key, p.a, result)
       discard getTok(p)
       eat(p, tkColon)
@@ -268,7 +307,7 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
       discard getTok(p)
     eat(p, tkCurlyRi)
   of tkBracketLe:
-    result = createEntity(x)
+    result = createJsonNode(x)
     mixJArray(x, result, parent)
     discard getTok(p)
     while p.tok != tkBracketRi:
@@ -280,7 +319,7 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
     raiseParseErr(p, "{")
 
 proc parseJson*(s: Stream, filename: string = "";
-    rawIntegers = false, rawFloats = false): (Entity, JsonTree) =
+    rawIntegers = false, rawFloats = false): (JsonNode, JsonTree) =
   ## Parses from a stream `s` into a `JsonTree`. `filename` is only needed
   ## for nice error messages.
   ## If `s` contains extra data, it will raise `JsonParsingError`.
@@ -288,26 +327,19 @@ proc parseJson*(s: Stream, filename: string = "";
   open(p, s, filename)
   try:
     discard getTok(p)
-    result[1] = JsonTree(
-      signatures: initSlotTableOfCap[set[HasComponent]](maxEntities),
-      jbools: initArray[JBool](),
-      jints: initArray[JInt](),
-      jfloats: initArray[JFloat](),
-      jstrings: initArray[JString](),
-      hierarchies: initArray[Hierarchy]()
-    )
+    result[1] = JsonTree()
     result[0] = parseJson(result[1], p, rawIntegers, rawFloats, invalidId)
     eat(p, tkEof)
   finally:
     close(p)
 
 proc parseJson*(buffer: string;
-    rawIntegers = false, rawFloats = false): (Entity, JsonTree) =
+    rawIntegers = false, rawFloats = false): (JsonNode, JsonTree) =
   ## Parses JSON from `buffer`.
   ## If `buffer` contains extra data, it will raise `JsonParsingError`.
   parseJson(newStringStream(buffer), "input", rawIntegers, rawFloats)
 
-proc parseFile*(filename: string): (Entity, JsonTree) =
+proc parseFile*(filename: string): (JsonNode, JsonTree) =
   ## Parses `file` into a `JsonTree`.
   ## If `file` contains extra data, it will raise `JsonParsingError`.
   var stream = newFileStream(filename, fmRead)
@@ -316,9 +348,16 @@ proc parseFile*(filename: string): (Entity, JsonTree) =
   result = parseJson(stream, filename)
 
 when isMainModule:
-  let (root, testJson) = parseJson"""{ "a": [1, 2, {"key": [4, 5]}, 4]}"""
-  echo testJson.signatures.len
-  for (key, ent1) in pairs(testJson, root):
-    echo key, ":"
-    for ent2 in items(testJson, ent1):
-      echo testJson.getInt(ent2)
+  block:
+    let (rootNode, testJson) = parseJson"""{ "a": [1, 2, {"key": [4, 5]}, 4]}"""
+    echo testJson.signatures.len
+    for (key, node1) in pairs(testJson, rootNode):
+      echo key, ": ", testJson.kind(node1)
+      for node2 in items(testJson, node1):
+        echo testJson.getInt(node2)
+  block:
+    let (rootNode, testJson) = parseJson"""{"name": "Isaac", "books": ["Robot Dreams"],
+        "details": {"age": 35, "pi": 3.1415}}"""
+    echo testJson.signatures.len
+    for (key, node1) in pairs(testJson, rootNode):
+      echo key, ": ", testJson.kind(node1)
