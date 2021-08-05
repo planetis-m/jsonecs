@@ -103,8 +103,7 @@ template mixBody(has) =
   x.signatures[n].incl has
 
 proc reserve[T](x: var seq[T]; needed: int) {.inline.} =
-  if needed > x.len:
-    grow(x, needed, default(T))
+  if needed > x.len: setLen(x, needed)
 
 proc mixHierarchy(x: var JsonTree, n: JsonNode, parent = invalidId) =
   mixBody HierarchyPriv
