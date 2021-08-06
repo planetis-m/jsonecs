@@ -82,7 +82,6 @@ proc append(x: JsonTree, parentId, n: JsonNodeId) =
 proc removeNode(x: JsonTree, n: JsonNodeId) =
   template hierarchy: untyped = x.hierarchies[n.idx]
   template parent: untyped = x.hierarchies[parentId.idx]
-  template nextSibling: untyped = x.hierarchies[nextSiblingId.idx]
   template tailSibling: untyped = x.hierarchies[tailSiblingId.idx]
 
   if parentId ?= hierarchy.parent:
@@ -190,7 +189,7 @@ iterator items*(x: JsonNode): JsonNode =
     yield JsonNode(id: childId, k: x.k)
     childId = childHierarchy.next
 
-iterator pairs*(x: JsonNode): (string, JsonNode) =
+iterator pairs*(x: JsonNode): (lent string, JsonNode) =
   ## Iterator for the pairs of `x`. `x` has to be a JObject.
   assert JObject in x.k.signatures[x.id]
   template hierarchy: untyped = x.k.hierarchies[x.id.idx]
@@ -243,12 +242,18 @@ proc getBool*(x: JsonNode, default: bool = false): bool =
   if JBool in x.k.signatures[x.id]: result = x.k.jbools[x.id.idx].bval
   else: result = default
 
+proc raiseKeyError(key: string) {.noinline, noreturn.} =
+  raise newException(KeyError, "key not found in object: " & key)
+
+proc raiseIndexDefect {.noinline, noreturn.} =
+  raise newException(IndexDefect, "index out of bounds")
+
 proc `[]`*(x: JsonNode, key: string): JsonNode {.inline.} =
   ## Gets a field from a `JObject`, which must not be nil.
   ## If the value at `key` does not exist, raises KeyError.
   for o, y in pairs(x):
     if o == key: return y
-  raise newException(KeyError, "key not found in object: " & key)
+  raiseKeyError(key)
 
 proc `[]`*(x: JsonNode, index: int): JsonNode {.inline.} =
   ## Gets the node at `index` in an Array. Result is undefined if `index`
@@ -258,7 +263,7 @@ proc `[]`*(x: JsonNode, index: int): JsonNode {.inline.} =
   for y in items(x):
     if i == 0: return y
     dec i
-  raise newException(IndexDefect, "index out of bounds")
+  raiseIndexDefect()
 
 proc contains*(x: JsonNode, key: string): bool =
   ## Checks if `key` exists in `n`.
@@ -381,7 +386,14 @@ proc parseJson*(s: Stream, filename: string = "";
   open(p, s, filename)
   try:
     discard getTok(p)
-    result.k = JsonTree()
+    result.k = JsonTree(
+        signatures: newSlotTableOfCap[set[JsonNodeKind]](64),
+        jbools: newSeq[JBoolImpl](64),
+        jints: newSeq[JIntImpl](64),
+        jfloats: newSeq[JFloatImpl](64),
+        jstrings: newSeq[JStringImpl](64),
+        hierarchies: newSeq[Hierarchy](64)
+      )
     result.id = parseJson(result.k, p, rawIntegers, rawFloats, invalidId)
     eat(p, tkEof)
   finally:

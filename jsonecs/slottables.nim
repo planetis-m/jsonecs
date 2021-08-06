@@ -10,7 +10,7 @@ type
     slots: seq[JsonNodeId]
     data: seq[Entry[T]]
 
-proc initSlotTableOfCap*[T](capacity: Natural): SlotTable[T] =
+proc newSlotTableOfCap*[T](capacity: Natural): SlotTable[T] =
   result = SlotTable[T](
     data: newSeqOfCap[Entry[T]](capacity),
     slots: newSeqOfCap[JsonNodeId](capacity),
@@ -74,10 +74,13 @@ proc clear*[T](x: var SlotTable[T]) =
   x.slots.shrink(0)
   x.data.shrink(0)
 
+proc raiseKeyError {.noinline, noreturn.} =
+  raise newException(KeyError, "JsonNodeId not in SlotTable")
+
 template get(x, n) =
   template slot: untyped = x.slots[n.idx]
   if n.idx >= x.slots.len or slot.version != n.version:
-    raise newException(KeyError, "JsonNodeId not in SlotTable")
+    raiseKeyError()
   # This is safe because we only store valid indices.
   let idx = slot.idx
   result = x.data[idx].value
