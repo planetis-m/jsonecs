@@ -1,7 +1,11 @@
 import
-  jsonecs / [jsonnodes, slottables],
+  jsonecs / [jsonnodes, slottables, heaparrays],
   std / [parsejson, streams, strutils]
 export jsonnodes
+
+const
+  growthFactor = 2
+  defaultInitialSize = 64
 
 type
   JsonNodeKind* = enum
@@ -37,12 +41,12 @@ type
   JsonTree* = ref object
     signatures: SlotTable[set[JsonNodeKind]]
     # Atoms
-    jbools: seq[JBoolImpl]
-    jints: seq[JIntImpl]
-    jfloats: seq[JFloatImpl]
-    jstrings: seq[JStringImpl]
+    jbools: DArray[JBoolImpl]
+    jints: DArray[JIntImpl]
+    jfloats: DArray[JFloatImpl]
+    jstrings: DArray[JStringImpl]
     # Mappings
-    hierarchies: seq[Hierarchy]
+    hierarchies: DArray[Hierarchy]
 
   JsonNode* = object
     id: JsonNodeId
@@ -103,12 +107,15 @@ proc delete*(x: JsonTree, n: JsonNodeId) =
 template mixBody(has) =
   x.signatures[n].incl has
 
-proc reserve[T](x: var seq[T]; needed: int) {.inline.} =
-  if needed > x.len: setLen(x, needed)
+proc mustGrow[T](x: var DArray[T]; index: int): bool {.inline.} =
+  result = x.len - index < 4
+
+proc reserve[T](x: var DArray[T]; index: int) {.inline.} =
+  if mustGrow(x, index): grow(x, x.len * growthFactor)
 
 proc mixHierarchy(x: JsonTree, n: JsonNodeId, parent = invalidId) =
   mixBody HierarchyPriv
-  reserve(x.hierarchies, n.idx + 1)
+  reserve(x.hierarchies, n.idx)
   x.hierarchies[n.idx] = Hierarchy(
     head: invalidId, tail: invalidId, next: invalidId,
     parent: parent)
@@ -119,34 +126,34 @@ proc mixJNull(x: JsonTree, n: JsonNodeId) =
 
 proc mixJBool(x: JsonTree, n: JsonNodeId, b: bool) =
   mixBody JBool
-  reserve(x.jbools, n.idx + 1)
+  reserve(x.jbools, n.idx)
   x.jbools[n.idx] = JBoolImpl(bval: b)
 
 proc mixJInt(x: JsonTree, n: JsonNodeId, i: BiggestInt) =
   mixBody JInt
-  reserve(x.jints, n.idx + 1)
+  reserve(x.jints, n.idx)
   x.jints[n.idx] = JIntImpl(num: i)
 
 proc mixJFloat(x: JsonTree, n: JsonNodeId, f: float) =
   mixBody JFloat
-  reserve(x.jfloats, n.idx + 1)
+  reserve(x.jfloats, n.idx)
   x.jfloats[n.idx] = JFloatImpl(fnum: f)
 
 proc mixJString(x: JsonTree, n: JsonNodeId, s: sink string) =
   mixBody JString
-  reserve(x.jstrings, n.idx + 1)
+  reserve(x.jstrings, n.idx)
   x.jstrings[n.idx] = JStringImpl(str: s)
 
 proc mixJRawNumber(x: JsonTree, n: JsonNodeId, s: sink string) =
   mixBody JString
   mixBody JRawNumber
-  reserve(x.jstrings, n.idx + 1)
+  reserve(x.jstrings, n.idx)
   x.jstrings[n.idx] = JStringImpl(str: s, isUnquoted: true)
 
 proc mixJKey(x: JsonTree, n: JsonNodeId, s: sink string, parent = invalidId) =
   mixBody JKey
   mixBody JString
-  reserve(x.jstrings, n.idx + 1)
+  reserve(x.jstrings, n.idx)
   x.jstrings[n.idx] = JStringImpl(str: s)
   mixHierarchy(x, n, parent)
 
@@ -387,12 +394,12 @@ proc parseJson*(s: Stream, filename: string = "";
   try:
     discard getTok(p)
     result.k = JsonTree(
-        signatures: newSlotTableOfCap[set[JsonNodeKind]](64),
-        jbools: newSeq[JBoolImpl](64),
-        jints: newSeq[JIntImpl](64),
-        jfloats: newSeq[JFloatImpl](64),
-        jstrings: newSeq[JStringImpl](64),
-        hierarchies: newSeq[Hierarchy](64)
+        signatures: newSlotTableOfCap[set[JsonNodeKind]](defaultInitialSize),
+        jbools: newDArray[JBoolImpl](defaultInitialSize),
+        jints: newDArray[JIntImpl](defaultInitialSize),
+        jfloats: newDArray[JFloatImpl](defaultInitialSize),
+        jstrings: newDArray[JStringImpl](defaultInitialSize),
+        hierarchies: newDArray[Hierarchy](defaultInitialSize)
       )
     result.id = parseJson(result.k, p, rawIntegers, rawFloats, invalidId)
     eat(p, tkEof)
