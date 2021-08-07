@@ -1,6 +1,6 @@
 import
   jsonecs / [jsonnodes, slottables, heaparrays],
-  std / [parsejson, streams, strutils]
+  std / [parsejson, streams, strutils, hashes]
 export jsonnodes
 
 const
@@ -8,7 +8,7 @@ const
   defaultInitialLen = 64
 
 type
-  JsonNodeKind* = enum
+  JNodeKind* = enum
     JNull
     JBool
     JInt
@@ -18,7 +18,7 @@ type
     JArray
     JKey
     JRawNumber
-    HierarchyPriv
+    JNode
 
   JBoolImpl = object
     bval: bool
@@ -33,30 +33,35 @@ type
     str: string
     isUnquoted: bool
 
-  Hierarchy = object
+  JNodeImpl = object
     head, tail: JsonNodeId
     next: JsonNodeId
     parent: JsonNodeId
 
-  JsonTree* = ref object
-    signatures: SlotTable[set[JsonNodeKind]]
+  JKeyImpl = object
+    hcode: Hash
+
+  Storage* = ref object
+    signatures: SlotTable[set[JNodeKind]]
     # Atoms
     jbools: DArray[JBoolImpl]
     jints: DArray[JIntImpl]
     jfloats: DArray[JFloatImpl]
     jstrings: DArray[JStringImpl]
+    jkeys: DArray[JKeyImpl]
     # Mappings
-    hierarchies: DArray[Hierarchy]
+    jnodes: DArray[JNodeImpl]
 
   JsonNode* = object
     id: JsonNodeId
-    k: JsonTree
+    k: Storage
 
-proc getJsonNodeId(x: JsonTree): JsonNodeId =
+proc getJsonNodeId(x: Storage): JsonNodeId =
   result = x.signatures.incl({})
 
-iterator queryAll(x: JsonTree, parent: JsonNodeId, query: set[JsonNodeKind]): JsonNodeId =
-  template hierarchy: untyped = x.hierarchies[n.idx]
+iterator queryAll(x: Storage, parent: JsonNodeId,
+    query: set[JNodeKind]): JsonNodeId =
+  template hierarchy: untyped = x.jnodes[n.idx]
 
   var frontier = @[parent]
   while frontier.len > 0:
@@ -65,16 +70,16 @@ iterator queryAll(x: JsonTree, parent: JsonNodeId, query: set[JsonNodeKind]): Js
       yield n
     var childId = hierarchy.head
     while childId != invalidId:
-      template childHierarchy: untyped = x.hierarchies[childId.idx]
+      template childHierarchy: untyped = x.jnodes[childId.idx]
 
       frontier.add(childId)
       childId = childHierarchy.next
 
 template `?=`(name, value): bool = (let name = value; name != invalidId)
-proc append(x: JsonTree, parentId, n: JsonNodeId) =
-  template hierarchy: untyped = x.hierarchies[n.idx]
-  template parent: untyped = x.hierarchies[parentId.idx]
-  template tailSibling: untyped = x.hierarchies[tailSiblingId.idx]
+proc append(x: Storage, parentId, n: JsonNodeId) =
+  template hierarchy: untyped = x.jnodes[n.idx]
+  template parent: untyped = x.jnodes[parentId.idx]
+  template tailSibling: untyped = x.jnodes[tailSiblingId.idx]
 
   hierarchy.next = invalidId
   if tailSiblingId ?= parent.tail:
@@ -83,10 +88,10 @@ proc append(x: JsonTree, parentId, n: JsonNodeId) =
   parent.tail = n
   if parent.head == invalidId: parent.head = n
 
-proc removeNode(x: JsonTree, n: JsonNodeId) =
-  template hierarchy: untyped = x.hierarchies[n.idx]
-  template parent: untyped = x.hierarchies[parentId.idx]
-  template tailSibling: untyped = x.hierarchies[tailSiblingId.idx]
+proc removeNode(x: Storage, n: JsonNodeId) =
+  template hierarchy: untyped = x.jnodes[n.idx]
+  template parent: untyped = x.jnodes[parentId.idx]
+  template tailSibling: untyped = x.jnodes[tailSiblingId.idx]
 
   if parentId ?= hierarchy.parent:
     if n == parent.head:
@@ -95,10 +100,10 @@ proc removeNode(x: JsonTree, n: JsonNodeId) =
         if tailSibling.next == n:
           tailSibling.next = parent.head
 
-proc delete*(x: JsonTree, n: JsonNodeId) =
+proc delete*(x: Storage, n: JsonNodeId) =
   ## Deletes `x[key]`.
   var toDelete: seq[JsonNodeId]
-  for entity in queryAll(x, n, {HierarchyPriv}):
+  for entity in queryAll(x, n, {JNode}):
     removeNode(x, entity)
     toDelete.add(entity)
   for entity in toDelete.items:
@@ -108,64 +113,64 @@ template mixBody(has) =
   x.signatures[n].incl has
 
 proc mustGrow[T](x: var DArray[T]; index: int): bool {.inline.} =
-  result = x.len - index < 4
+  result = x.len - index < 5
 
 proc reserve[T](x: var DArray[T]; index: int) {.inline.} =
   if mustGrow(x, index): grow(x, x.len * growthFactor)
 
-proc mixHierarchy(x: JsonTree, n: JsonNodeId, parent = invalidId) =
-  mixBody HierarchyPriv
-  reserve(x.hierarchies, n.idx)
-  x.hierarchies[n.idx] = Hierarchy(
+proc mixJNode(x: Storage, n: JsonNodeId, parent = invalidId) =
+  mixBody JNode
+  reserve(x.jnodes, n.idx)
+  x.jnodes[n.idx] = JNodeImpl(
     head: invalidId, tail: invalidId, next: invalidId,
     parent: parent)
   if parent != invalidId: append(x, parent, n)
 
-proc mixJNull(x: JsonTree, n: JsonNodeId) =
+proc mixJNull(x: Storage, n: JsonNodeId) =
   mixBody JNull
 
-proc mixJBool(x: JsonTree, n: JsonNodeId, b: bool) =
+proc mixJBool(x: Storage, n: JsonNodeId, b: bool) =
   mixBody JBool
   reserve(x.jbools, n.idx)
   x.jbools[n.idx] = JBoolImpl(bval: b)
 
-proc mixJInt(x: JsonTree, n: JsonNodeId, i: BiggestInt) =
+proc mixJInt(x: Storage, n: JsonNodeId, i: BiggestInt) =
   mixBody JInt
   reserve(x.jints, n.idx)
   x.jints[n.idx] = JIntImpl(num: i)
 
-proc mixJFloat(x: JsonTree, n: JsonNodeId, f: float) =
+proc mixJFloat(x: Storage, n: JsonNodeId, f: float) =
   mixBody JFloat
   reserve(x.jfloats, n.idx)
   x.jfloats[n.idx] = JFloatImpl(fnum: f)
 
-proc mixJString(x: JsonTree, n: JsonNodeId, s: sink string) =
+proc mixJString(x: Storage, n: JsonNodeId, s: sink string) =
   mixBody JString
   reserve(x.jstrings, n.idx)
   x.jstrings[n.idx] = JStringImpl(str: s)
 
-proc mixJRawNumber(x: JsonTree, n: JsonNodeId, s: sink string) =
+proc mixJRawNumber(x: Storage, n: JsonNodeId, s: sink string) =
   mixBody JString
   mixBody JRawNumber
   reserve(x.jstrings, n.idx)
   x.jstrings[n.idx] = JStringImpl(str: s, isUnquoted: true)
 
-proc mixJKey(x: JsonTree, n: JsonNodeId, s: sink string, parent = invalidId) =
+proc mixJKey(x: Storage, n: JsonNodeId, s: sink string, parent = invalidId) =
   mixBody JKey
-  mixBody JString
-  reserve(x.jstrings, n.idx)
-  x.jstrings[n.idx] = JStringImpl(str: s)
-  mixHierarchy(x, n, parent)
+  reserve(x.jkeys, n.idx)
+  x.jkeys[n.idx] = JKeyImpl(hcode: hash(s))
+  mixJString(x, n, s)
+  mixJNode(x, n, parent)
 
-proc mixJObject(x: JsonTree, n: JsonNodeId, parent = invalidId) =
+proc mixJObject(x: Storage, n: JsonNodeId, parent = invalidId) =
   mixBody JObject
-  mixHierarchy(x, n, parent)
+  mixJNode(x, n, parent)
 
-proc mixJArray(x: JsonTree, n: JsonNodeId, parent = invalidId) =
+proc mixJArray(x: Storage, n: JsonNodeId, parent = invalidId) =
   mixBody JArray
-  mixHierarchy(x, n, parent)
+  mixJNode(x, n, parent)
 
-proc kind*(x: JsonNode): JsonNodeKind =
+proc kind*(x: JsonNode): JNodeKind =
   let sign = x.k.signatures[x.id]
   if JNull in sign:
     result = JNull
@@ -187,11 +192,11 @@ proc kind*(x: JsonNode): JsonNodeKind =
 iterator items*(x: JsonNode): JsonNode =
   ## Iterator for the items of `x`. `x` has to be a JArray.
   assert JArray in x.k.signatures[x.id]
-  template hierarchy: untyped = x.k.hierarchies[x.id.idx]
+  template hierarchy: untyped = x.k.jnodes[x.id.idx]
 
   var childId = hierarchy.head
   while childId != invalidId:
-    template childHierarchy: untyped = x.k.hierarchies[childId.idx]
+    template childHierarchy: untyped = x.k.jnodes[childId.idx]
 
     yield JsonNode(id: childId, k: x.k)
     childId = childHierarchy.next
@@ -199,39 +204,40 @@ iterator items*(x: JsonNode): JsonNode =
 iterator pairs*(x: JsonNode): (lent string, JsonNode) =
   ## Iterator for the pairs of `x`. `x` has to be a JObject.
   assert JObject in x.k.signatures[x.id]
-  template hierarchy: untyped = x.k.hierarchies[x.id.idx]
+  template hierarchy: untyped = x.k.jnodes[x.id.idx]
 
   var childId = hierarchy.head
   while childId != invalidId:
-    template childHierarchy: untyped = x.k.hierarchies[childId.idx]
+    template childHierarchy: untyped = x.k.jnodes[childId.idx]
+    template jstring: untyped = x.k.jstrings[childId.idx]
 
-    assert JKey in x.k.signatures[childId]
-    yield (x.k.jstrings[childId.idx].str, JsonNode(id: childHierarchy.head, k: x.k))
+    assert x.k.signatures[childId] * {JKey, JString} == {JKey, JString}
+    yield (jstring.str, JsonNode(id: childHierarchy.head, k: x.k))
     childId = childHierarchy.next
 
 proc getStr*(x: JsonNode, default: string = ""): string =
-  ## Retrieves the string value of a `JString JsonTree`.
+  ## Retrieves the string value of a `JString`.
   ##
   ## Returns `default` if `x` is not a `JString`.
   if JString in x.k.signatures[x.id]: result = x.k.jstrings[x.id.idx].str
   else: result = default
 
 proc getInt*(x: JsonNode, default: int = 0): int =
-  ## Retrieves the int value of a `JInt JsonTree`.
+  ## Retrieves the int value of a `JInt`.
   ##
   ## Returns `default` if `x` is not a `JInt`, or if `x` is nil.
   if JInt in x.k.signatures[x.id]: result = int(x.k.jints[x.id.idx].num)
   else: result = default
 
 proc getBiggestInt*(x: JsonNode, default: BiggestInt = 0): BiggestInt =
-  ## Retrieves the BiggestInt value of a `JInt JsonTree`.
+  ## Retrieves the BiggestInt value of a `JInt`.
   ##
   ## Returns `default` if `x` is not a `JInt`, or if `x` is nil.
   if JInt in x.k.signatures[x.id]: result = x.k.jints[x.id.idx].num
   else: result = default
 
 proc getFloat*(x: JsonNode, default: float = 0.0): float =
-  ## Retrieves the float value of a `JFloat JsonTree`.
+  ## Retrieves the float value of a `JFloat`.
   ##
   ## Returns `default` if `x` is not a `JFloat` or `JInt`, or if `x` is nil.
   let sign = x.k.signatures[x.id]
@@ -243,7 +249,7 @@ proc getFloat*(x: JsonNode, default: float = 0.0): float =
     result = default
 
 proc getBool*(x: JsonNode, default: bool = false): bool =
-  ## Retrieves the bool value of a `JBool JsonTree`.
+  ## Retrieves the bool value of a `JBool`.
   ##
   ## Returns `default` if `n` is not a `JBool`, or if `n` is nil.
   if JBool in x.k.signatures[x.id]: result = x.k.jbools[x.id.idx].bval
@@ -255,12 +261,30 @@ proc raiseKeyError(key: string) {.noinline, noreturn.} =
 proc raiseIndexDefect {.noinline, noreturn.} =
   raise newException(IndexDefect, "index out of bounds")
 
+proc get(x: JsonNode, key: string): JsonNodeId {.inline.} =
+  ## Iterator for the pairs of `x`. `x` has to be a JObject.
+  assert JObject in x.k.signatures[x.id]
+  template hierarchy: untyped = x.k.jnodes[x.id.idx]
+
+  var childId = hierarchy.head
+  let h = hash(key)
+  while childId != invalidId:
+    template childHierarchy: untyped = x.k.jnodes[childId.idx]
+    template jkey: untyped = x.k.jkeys[childId.idx]
+    template jstring: untyped = x.k.jstrings[childId.idx]
+
+    assert x.k.signatures[childId] * {JKey, JString} == {JKey, JString}
+    if jkey.hcode == h and jstring.str == key:
+      return childHierarchy.head
+    childId = childHierarchy.next
+  result = invalidId
+
 proc `[]`*(x: JsonNode, key: string): JsonNode {.inline.} =
   ## Gets a field from a `JObject`, which must not be nil.
   ## If the value at `key` does not exist, raises KeyError.
-  for o, y in pairs(x):
-    if o == key: return y
-  raiseKeyError(key)
+  let id = get(x, key)
+  if id != invalidId: result = JsonNode(id: id, k: x.k)
+  else: raiseKeyError(key)
 
 proc `[]`*(x: JsonNode, index: int): JsonNode {.inline.} =
   ## Gets the node at `index` in an Array. Result is undefined if `index`
@@ -274,9 +298,7 @@ proc `[]`*(x: JsonNode, index: int): JsonNode {.inline.} =
 
 proc contains*(x: JsonNode, key: string): bool =
   ## Checks if `key` exists in `n`.
-  result = false
-  for o, y in pairs(x):
-    if o == key: return true
+  result = get(x, key) != invalidId
 
 proc hasKey*(x: JsonNode, key: string): bool =
   ## Checks if `key` exists in `x`.
@@ -290,10 +312,10 @@ proc `{}`*(x: JsonNode, keys: varargs[string]): JsonNode =
   for kk in keys:
     if JObject notin x.k.signatures[result.id]: return JsonNode(id: invalidId)
     block searchLoop:
-      for k, v in pairs(result):
-        if k == kk:
-          result = v
-          break searchLoop
+      let id = get(result, kk)
+      if id != invalidId:
+        result = JsonNode(id: id, k: x.k)
+        break searchLoop
       return JsonNode(id: invalidId)
 
 proc `{}`*(x: JsonNode, indexes: varargs[int]): JsonNode =
@@ -312,13 +334,13 @@ proc `{}`*(x: JsonNode, indexes: varargs[int]): JsonNode =
         dec i
       return JsonNode(id: invalidId)
 
-proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
+proc parseJson(x: var Storage; p: var JsonParser; rawIntegers, rawFloats: bool;
       parent: JsonNodeId): JsonNodeId =
   case p.tok
   of tkString:
     result = getJsonNodeId(x)
     mixJString(x, result, p.a)
-    mixHierarchy(x, result, parent)
+    mixJNode(x, result, parent)
     discard getTok(p)
   of tkInt:
     result = getJsonNodeId(x)
@@ -329,7 +351,7 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
         mixJInt(x, result, parseBiggestInt(p.a))
       except ValueError:
         mixJRawNumber(x, result, p.a)
-    mixHierarchy(x, result, parent)
+    mixJNode(x, result, parent)
     discard getTok(p)
   of tkFloat:
     result = getJsonNodeId(x)
@@ -340,22 +362,22 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
         mixJFloat(x, result, parseFloat(p.a))
       except ValueError:
         mixJRawNumber(x, result, p.a)
-    mixHierarchy(x, result, parent)
+    mixJNode(x, result, parent)
     discard getTok(p)
   of tkTrue:
     result = getJsonNodeId(x)
     mixJBool(x, result, true)
-    mixHierarchy(x, result, parent)
+    mixJNode(x, result, parent)
     discard getTok(p)
   of tkFalse:
     result = getJsonNodeId(x)
     mixJBool(x, result, false)
-    mixHierarchy(x, result, parent)
+    mixJNode(x, result, parent)
     discard getTok(p)
   of tkNull:
     result = getJsonNodeId(x)
     mixJNull(x, result)
-    mixHierarchy(x, result, parent)
+    mixJNode(x, result, parent)
     discard getTok(p)
   of tkCurlyLe:
     result = getJsonNodeId(x)
@@ -386,20 +408,21 @@ proc parseJson(x: var JsonTree; p: var JsonParser; rawIntegers, rawFloats: bool;
 
 proc parseJson*(s: Stream, filename: string = "";
     rawIntegers = false, rawFloats = false): JsonNode =
-  ## Parses from a stream `s` into a `JsonTree`. `filename` is only needed
+  ## Parses from a stream `s` into a `JsonNode`. `filename` is only needed
   ## for nice error messages.
   ## If `s` contains extra data, it will raise `JsonParsingError`.
   var p: JsonParser
   open(p, s, filename)
   try:
     discard getTok(p)
-    result.k = JsonTree(
-        signatures: newSlotTableOfCap[set[JsonNodeKind]](defaultInitialLen),
+    result.k = Storage(
+        signatures: newSlotTableOfCap[set[JNodeKind]](defaultInitialLen),
         jbools: newDArray[JBoolImpl](defaultInitialLen),
         jints: newDArray[JIntImpl](defaultInitialLen),
         jfloats: newDArray[JFloatImpl](defaultInitialLen),
         jstrings: newDArray[JStringImpl](defaultInitialLen),
-        hierarchies: newDArray[Hierarchy](defaultInitialLen)
+        jkeys: newDArray[JKeyImpl](defaultInitialLen),
+        jnodes: newDArray[JNodeImpl](defaultInitialLen)
       )
     result.id = parseJson(result.k, p, rawIntegers, rawFloats, invalidId)
     eat(p, tkEof)
@@ -413,7 +436,7 @@ proc parseJson*(buffer: string;
   parseJson(newStringStream(buffer), "input", rawIntegers, rawFloats)
 
 proc parseFile*(filename: string): JsonNode =
-  ## Parses `file` into a `JsonTree`.
+  ## Parses `file` into a `JsonNode`.
   ## If `file` contains extra data, it will raise `JsonParsingError`.
   var stream = newFileStream(filename, fmRead)
   if stream == nil:
