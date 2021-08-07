@@ -170,7 +170,7 @@ proc mixJArray(x: Storage, n: JsonNodeId, parent = invalidId) =
   mixBody JArray
   mixJNode(x, n, parent)
 
-proc isNil*(x: JsonNode): bool {.inline.} = x.id == invalidId
+proc isNil*(x: JsonNode): bool {.inline.} = x.id == invalidId or x.k == nil
 
 proc kind*(x: JsonNode): JNodeKind =
   assert not x.isNil
@@ -326,7 +326,7 @@ proc `{}`*(x: JsonNode, keys: varargs[string]): JsonNode =
   ## intermediate data structures is not an object.
   var resultId = x.id
   for kk in keys:
-    if x.isNil or JObject notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
+    if x.k.isNil or JObject notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
     block searchLoop:
       resultId = get(x.k, resultId, kk)
       if resultId != invalidId:
@@ -340,7 +340,7 @@ proc `{}`*(x: JsonNode, indexes: varargs[int]): JsonNode =
   ## intermediate data structures is not an array.
   var resultId = x.id
   for j in indexes:
-    if x.isNil or JArray notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
+    if x.k.isNil or JArray notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
     block searchLoop:
       resultId = get(x.k, resultId, j)
       if resultId != invalidId:
