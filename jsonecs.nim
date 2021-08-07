@@ -261,19 +261,18 @@ proc raiseKeyError(key: string) {.noinline, noreturn.} =
 proc raiseIndexDefect {.noinline, noreturn.} =
   raise newException(IndexDefect, "index out of bounds")
 
-proc get(x: JsonNode, key: string): JsonNodeId {.inline.} =
-  ## Iterator for the pairs of `x`. `x` has to be a JObject.
-  assert JObject in x.k.signatures[x.id]
-  template hierarchy: untyped = x.k.jnodes[x.id.idx]
+proc get(x: Storage, n: JsonNodeId, key: string): JsonNodeId {.inline.} =
+  assert JObject in x.signatures[n]
+  template hierarchy: untyped = x.jnodes[n.idx]
 
   var childId = hierarchy.head
   let h = hash(key)
   while childId != invalidId:
-    template childHierarchy: untyped = x.k.jnodes[childId.idx]
-    template jkey: untyped = x.k.jkeys[childId.idx]
-    template jstring: untyped = x.k.jstrings[childId.idx]
+    template childHierarchy: untyped = x.jnodes[childId.idx]
+    template jkey: untyped = x.jkeys[childId.idx]
+    template jstring: untyped = x.jstrings[childId.idx]
 
-    assert x.k.signatures[childId] * {JKey, JString} == {JKey, JString}
+    assert x.signatures[childId] * {JKey, JString} == {JKey, JString}
     if jkey.hcode == h and jstring.str == key:
       return childHierarchy.head
     childId = childHierarchy.next
@@ -282,23 +281,35 @@ proc get(x: JsonNode, key: string): JsonNodeId {.inline.} =
 proc `[]`*(x: JsonNode, key: string): JsonNode {.inline.} =
   ## Gets a field from a `JObject`, which must not be nil.
   ## If the value at `key` does not exist, raises KeyError.
-  let id = get(x, key)
+  let id = get(x.k, x.id, key)
   if id != invalidId: result = JsonNode(id: id, k: x.k)
   else: raiseKeyError(key)
+
+proc get(x: Storage, n: JsonNodeId, index: int): JsonNodeId {.inline.} =
+  assert JArray in x.signatures[n]
+  template hierarchy: untyped = x.jnodes[n.idx]
+
+  var childId = hierarchy.head
+  var i = index
+  while childId != invalidId:
+    template childHierarchy: untyped = x.jnodes[childId.idx]
+
+    if i == 0: return childId
+    dec i
+    childId = childHierarchy.next
+  result = invalidId
 
 proc `[]`*(x: JsonNode, index: int): JsonNode {.inline.} =
   ## Gets the node at `index` in an Array. Result is undefined if `index`
   ## is out of bounds, but as long as array bound checks are enabled it will
   ## result in an exception.
-  var i = index
-  for y in items(x):
-    if i == 0: return y
-    dec i
-  raiseIndexDefect()
+  let id = get(x.k, x.id, index)
+  if id != invalidId: result = JsonNode(id: id, k: x.k)
+  else: raiseIndexDefect()
 
 proc contains*(x: JsonNode, key: string): bool =
   ## Checks if `key` exists in `n`.
-  result = get(x, key) != invalidId
+  result = get(x.k, x.id, key) != invalidId
 
 proc hasKey*(x: JsonNode, key: string): bool =
   ## Checks if `key` exists in `x`.
@@ -308,31 +319,29 @@ proc `{}`*(x: JsonNode, keys: varargs[string]): JsonNode =
   ## Traverses the node and gets the given value. If any of the
   ## keys do not exist, returns `JNull`. Also returns `JNull` if one of the
   ## intermediate data structures is not an object.
-  result = x
+  var resultId = x.id
   for kk in keys:
-    if JObject notin x.k.signatures[result.id]: return JsonNode(id: invalidId)
+    if JObject notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
     block searchLoop:
-      let id = get(result, kk)
-      if id != invalidId:
-        result = JsonNode(id: id, k: x.k)
+      resultId = get(x.k, resultId, kk)
+      if resultId != invalidId:
         break searchLoop
       return JsonNode(id: invalidId)
+  result = JsonNode(id: resultId, k: x.k)
 
 proc `{}`*(x: JsonNode, indexes: varargs[int]): JsonNode =
   ## Traverses the node and gets the given value. If any of the
   ## indexes do not exist, returns `JNull`. Also returns `JNull` if one of the
   ## intermediate data structures is not an array.
-  result = x
+  var resultId = x.id
   for j in indexes:
-    if JArray notin x.k.signatures[result.id]: return JsonNode(id: invalidId)
+    if JArray notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
     block searchLoop:
-      var i = j
-      for y in items(result):
-        if i == 0:
-          result = y
-          break searchLoop
-        dec i
+      resultId = get(x.k, resultId, j)
+      if resultId != invalidId:
+        break searchLoop
       return JsonNode(id: invalidId)
+  result = JsonNode(id: resultId, k: x.k)
 
 proc parseJson(x: var Storage; p: var JsonParser; rawIntegers, rawFloats: bool;
       parent: JsonNodeId): JsonNodeId =
