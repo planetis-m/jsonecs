@@ -10,34 +10,37 @@ proc `=destroy`*[T](x: var DArray[T]) =
   if x.data != nil:
     when not supportsCopyMem(T):
       for i in 0..<x.len: `=destroy`(x[i])
-    dealloc(x.data)
+    deallocShared(x.data)
 proc `=copy`*[T](dest: var DArray[T], src: DArray[T]) {.error.}
 
 proc newDArray*[T](len = 0.Natural): DArray[T] =
   when not supportsCopyMem(T):
-    result.data = cast[typeof(result.data)](alloc0(len * sizeof(T)))
+    result.data = cast[typeof(result.data)](allocShared0(len * sizeof(T)))
   else:
-    result.data = cast[typeof(result.data)](alloc(len * sizeof(T)))
+    result.data = cast[typeof(result.data)](allocShared(len * sizeof(T)))
   result.len = len
 
 proc grow*[T](s: var DArray[T], newLen: Natural) =
   if s.len < newLen:
-    s.data = cast[typeof(s.data)](realloc0(s.data, s.len * sizeof(T), newLen * sizeof(T)))
+    when not supportsCopyMem(T):
+      s.data = cast[typeof(s.data)](reallocShared0(s.data, s.len * sizeof(T), newLen * sizeof(T)))
+    else:
+      s.data = cast[typeof(s.data)](reallocShared(s.data, newLen * sizeof(T)))
     s.len = newLen
 
 proc len*[T](s: DArray[T]): int {.inline.} = s.len
 
-proc raiseNilAccess() {.noinline, noreturn.} =
-  raise newException(NilAccessDefect, "array not inititialized")
+proc raiseRangeDefect {.noinline, noreturn.} =
+  raise newException(RangeDefect, "array access out of bounds")
 
-template checkInit() =
+template checkArrayAccess() =
   when compileOption("boundChecks"):
     {.line.}:
-      if x.data == nil:
-        raiseNilAccess()
+      if x.data == nil or i >= x.len:
+        raiseRangeDefect()
 
 template get(x, i) =
-  checkInit()
+  checkArrayAccess()
   x.data[i]
 
 proc `[]`*[T](x: DArray[T]; i: Natural): lent T =
@@ -46,7 +49,7 @@ proc `[]`*[T](x: var DArray[T]; i: Natural): var T =
   get(x, i)
 
 proc `[]=`*[T](x: var DArray[T]; i: Natural; y: sink T) =
-  checkInit()
+  checkArrayAccess()
   x.data[i] = y
 
 proc clear*[T](x: DArray[T]) =

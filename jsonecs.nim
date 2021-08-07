@@ -5,7 +5,7 @@ export jsonnodes
 
 const
   growthFactor = 2
-  defaultInitialSize = 64
+  defaultInitialLen = 64
 
 type
   JsonNodeKind* = enum
@@ -394,12 +394,12 @@ proc parseJson*(s: Stream, filename: string = "";
   try:
     discard getTok(p)
     result.k = JsonTree(
-        signatures: newSlotTableOfCap[set[JsonNodeKind]](defaultInitialSize),
-        jbools: newDArray[JBoolImpl](defaultInitialSize),
-        jints: newDArray[JIntImpl](defaultInitialSize),
-        jfloats: newDArray[JFloatImpl](defaultInitialSize),
-        jstrings: newDArray[JStringImpl](defaultInitialSize),
-        hierarchies: newDArray[Hierarchy](defaultInitialSize)
+        signatures: newSlotTableOfCap[set[JsonNodeKind]](defaultInitialLen),
+        jbools: newDArray[JBoolImpl](defaultInitialLen),
+        jints: newDArray[JIntImpl](defaultInitialLen),
+        jfloats: newDArray[JFloatImpl](defaultInitialLen),
+        jstrings: newDArray[JStringImpl](defaultInitialLen),
+        hierarchies: newDArray[Hierarchy](defaultInitialLen)
       )
     result.id = parseJson(result.k, p, rawIntegers, rawFloats, invalidId)
     eat(p, tkEof)
