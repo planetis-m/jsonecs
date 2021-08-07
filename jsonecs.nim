@@ -170,7 +170,10 @@ proc mixJArray(x: Storage, n: JsonNodeId, parent = invalidId) =
   mixBody JArray
   mixJNode(x, n, parent)
 
+proc isNil*(x: JsonNode): bool {.inline.} = x.id == invalidId
+
 proc kind*(x: JsonNode): JNodeKind =
+  assert not x.isNil
   let sign = x.k.signatures[x.id]
   if JNull in sign:
     result = JNull
@@ -191,7 +194,7 @@ proc kind*(x: JsonNode): JNodeKind =
 
 iterator items*(x: JsonNode): JsonNode =
   ## Iterator for the items of `x`. `x` has to be a JArray.
-  assert JArray in x.k.signatures[x.id]
+  assert x.isNil or JArray in x.k.signatures[x.id]
   template hierarchy: untyped = x.k.jnodes[x.id.idx]
 
   var childId = hierarchy.head
@@ -203,7 +206,7 @@ iterator items*(x: JsonNode): JsonNode =
 
 iterator pairs*(x: JsonNode): (lent string, JsonNode) =
   ## Iterator for the pairs of `x`. `x` has to be a JObject.
-  assert JObject in x.k.signatures[x.id]
+  assert x.isNil or JObject in x.k.signatures[x.id]
   template hierarchy: untyped = x.k.jnodes[x.id.idx]
 
   var childId = hierarchy.head
@@ -219,27 +222,28 @@ proc getStr*(x: JsonNode, default: string = ""): string =
   ## Retrieves the string value of a `JString`.
   ##
   ## Returns `default` if `x` is not a `JString`.
-  if JString in x.k.signatures[x.id]: result = x.k.jstrings[x.id.idx].str
+  if x.isNil or JString in x.k.signatures[x.id]: result = x.k.jstrings[x.id.idx].str
   else: result = default
 
 proc getInt*(x: JsonNode, default: int = 0): int =
   ## Retrieves the int value of a `JInt`.
   ##
   ## Returns `default` if `x` is not a `JInt`, or if `x` is nil.
-  if JInt in x.k.signatures[x.id]: result = int(x.k.jints[x.id.idx].num)
+  if x.isNil or JInt in x.k.signatures[x.id]: result = int(x.k.jints[x.id.idx].num)
   else: result = default
 
 proc getBiggestInt*(x: JsonNode, default: BiggestInt = 0): BiggestInt =
   ## Retrieves the BiggestInt value of a `JInt`.
   ##
   ## Returns `default` if `x` is not a `JInt`, or if `x` is nil.
-  if JInt in x.k.signatures[x.id]: result = x.k.jints[x.id.idx].num
+  if x.isNil or JInt in x.k.signatures[x.id]: result = x.k.jints[x.id.idx].num
   else: result = default
 
 proc getFloat*(x: JsonNode, default: float = 0.0): float =
   ## Retrieves the float value of a `JFloat`.
   ##
   ## Returns `default` if `x` is not a `JFloat` or `JInt`, or if `x` is nil.
+  if x.isNil: return default
   let sign = x.k.signatures[x.id]
   if JFloat in sign:
     result = x.k.jfloats[x.id.idx].fnum
@@ -252,7 +256,7 @@ proc getBool*(x: JsonNode, default: bool = false): bool =
   ## Retrieves the bool value of a `JBool`.
   ##
   ## Returns `default` if `n` is not a `JBool`, or if `n` is nil.
-  if JBool in x.k.signatures[x.id]: result = x.k.jbools[x.id.idx].bval
+  if x.isNil or JBool in x.k.signatures[x.id]: result = x.k.jbools[x.id.idx].bval
   else: result = default
 
 proc raiseKeyError(key: string) {.noinline, noreturn.} =
@@ -262,7 +266,6 @@ proc raiseIndexDefect {.noinline, noreturn.} =
   raise newException(IndexDefect, "index out of bounds")
 
 proc get(x: Storage, n: JsonNodeId, key: string): JsonNodeId {.inline.} =
-  assert JObject in x.signatures[n]
   template hierarchy: untyped = x.jnodes[n.idx]
 
   var childId = hierarchy.head
@@ -278,15 +281,7 @@ proc get(x: Storage, n: JsonNodeId, key: string): JsonNodeId {.inline.} =
     childId = childHierarchy.next
   result = invalidId
 
-proc `[]`*(x: JsonNode, key: string): JsonNode {.inline.} =
-  ## Gets a field from a `JObject`, which must not be nil.
-  ## If the value at `key` does not exist, raises KeyError.
-  let id = get(x.k, x.id, key)
-  if id != invalidId: result = JsonNode(id: id, k: x.k)
-  else: raiseKeyError(key)
-
 proc get(x: Storage, n: JsonNodeId, index: int): JsonNodeId {.inline.} =
-  assert JArray in x.signatures[n]
   template hierarchy: untyped = x.jnodes[n.idx]
 
   var childId = hierarchy.head
@@ -299,16 +294,26 @@ proc get(x: Storage, n: JsonNodeId, index: int): JsonNodeId {.inline.} =
     childId = childHierarchy.next
   result = invalidId
 
+proc `[]`*(x: JsonNode, key: string): JsonNode {.inline.} =
+  ## Gets a field from a `JObject`, which must not be nil.
+  ## If the value at `key` does not exist, raises KeyError.
+  assert x.isNil or JObject in x.k.signatures[x.id]
+  let id = get(x.k, x.id, key)
+  if id != invalidId: result = JsonNode(id: id, k: x.k)
+  else: raiseKeyError(key)
+
 proc `[]`*(x: JsonNode, index: int): JsonNode {.inline.} =
   ## Gets the node at `index` in an Array. Result is undefined if `index`
   ## is out of bounds, but as long as array bound checks are enabled it will
   ## result in an exception.
+  assert x.isNil or JArray in x.k.signatures[x.id]
   let id = get(x.k, x.id, index)
   if id != invalidId: result = JsonNode(id: id, k: x.k)
   else: raiseIndexDefect()
 
 proc contains*(x: JsonNode, key: string): bool =
   ## Checks if `key` exists in `n`.
+  assert x.isNil or JObject in x.k.signatures[x.id]
   result = get(x.k, x.id, key) != invalidId
 
 proc hasKey*(x: JsonNode, key: string): bool =
@@ -321,7 +326,7 @@ proc `{}`*(x: JsonNode, keys: varargs[string]): JsonNode =
   ## intermediate data structures is not an object.
   var resultId = x.id
   for kk in keys:
-    if JObject notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
+    if x.isNil or JObject notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
     block searchLoop:
       resultId = get(x.k, resultId, kk)
       if resultId != invalidId:
@@ -335,7 +340,7 @@ proc `{}`*(x: JsonNode, indexes: varargs[int]): JsonNode =
   ## intermediate data structures is not an array.
   var resultId = x.id
   for j in indexes:
-    if JArray notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
+    if x.isNil or JArray notin x.k.signatures[resultId]: return JsonNode(id: invalidId)
     block searchLoop:
       resultId = get(x.k, resultId, j)
       if resultId != invalidId:
