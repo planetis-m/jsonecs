@@ -61,27 +61,27 @@ proc getJsonNodeId(x: Storage): JsonNodeId =
 
 iterator queryAll(x: Storage, parent: JsonNodeId,
     query: set[JNodeKind]): JsonNodeId =
-  template hierarchy: untyped = x.jnodes[n.idx]
+  template jnode: untyped = x.jnodes[n.idx]
 
   var frontier = @[parent]
   while frontier.len > 0:
     let n = frontier.pop()
     if x.signatures[n] * query == query:
       yield n
-    var childId = hierarchy.head
+    var childId = jnode.head
     while childId != invalidId:
-      template childHierarchy: untyped = x.jnodes[childId.idx]
+      template childJNode: untyped = x.jnodes[childId.idx]
 
       frontier.add(childId)
-      childId = childHierarchy.next
+      childId = childJNode.next
 
 template `?=`(name, value): bool = (let name = value; name != invalidId)
 proc append(x: Storage, parentId, n: JsonNodeId) =
-  template hierarchy: untyped = x.jnodes[n.idx]
+  template jnode: untyped = x.jnodes[n.idx]
   template parent: untyped = x.jnodes[parentId.idx]
   template tailSibling: untyped = x.jnodes[tailSiblingId.idx]
 
-  hierarchy.next = invalidId
+  jnode.next = invalidId
   if tailSiblingId ?= parent.tail:
     assert tailSibling.next == invalidId
     tailSibling.next = n
@@ -89,13 +89,13 @@ proc append(x: Storage, parentId, n: JsonNodeId) =
   if parent.head == invalidId: parent.head = n
 
 proc removeNode(x: Storage, n: JsonNodeId) =
-  template hierarchy: untyped = x.jnodes[n.idx]
+  template jnode: untyped = x.jnodes[n.idx]
   template parent: untyped = x.jnodes[parentId.idx]
   template tailSibling: untyped = x.jnodes[tailSiblingId.idx]
 
-  if parentId ?= hierarchy.parent:
+  if parentId ?= jnode.parent:
     if n == parent.head:
-      parent.head = hierarchy.next
+      parent.head = jnode.next
       if tailSiblingId ?= parent.tail:
         if tailSibling.next == n:
           tailSibling.next = parent.head
@@ -195,28 +195,28 @@ proc kind*(x: JsonNode): JNodeKind =
 iterator items*(x: JsonNode): JsonNode =
   ## Iterator for the items of `x`. `x` has to be a JArray.
   assert x.isNil or JArray in x.k.signatures[x.id]
-  template hierarchy: untyped = x.k.jnodes[x.id.idx]
+  template jnode: untyped = x.k.jnodes[x.id.idx]
 
-  var childId = hierarchy.head
+  var childId = jnode.head
   while childId != invalidId:
-    template childHierarchy: untyped = x.k.jnodes[childId.idx]
+    template childJNode: untyped = x.k.jnodes[childId.idx]
 
     yield JsonNode(id: childId, k: x.k)
-    childId = childHierarchy.next
+    childId = childJNode.next
 
 iterator pairs*(x: JsonNode): (lent string, JsonNode) =
   ## Iterator for the pairs of `x`. `x` has to be a JObject.
   assert x.isNil or JObject in x.k.signatures[x.id]
-  template hierarchy: untyped = x.k.jnodes[x.id.idx]
+  template jnode: untyped = x.k.jnodes[x.id.idx]
 
-  var childId = hierarchy.head
+  var childId = jnode.head
   while childId != invalidId:
-    template childHierarchy: untyped = x.k.jnodes[childId.idx]
+    template childJNode: untyped = x.k.jnodes[childId.idx]
     template jstring: untyped = x.k.jstrings[childId.idx]
 
     assert x.k.signatures[childId] * {JKey, JString} == {JKey, JString}
-    yield (jstring.str, JsonNode(id: childHierarchy.head, k: x.k))
-    childId = childHierarchy.next
+    yield (jstring.str, JsonNode(id: childJNode.head, k: x.k))
+    childId = childJNode.next
 
 proc getStr*(x: JsonNode, default: string = ""): string =
   ## Retrieves the string value of a `JString`.
@@ -266,32 +266,32 @@ proc raiseIndexDefect {.noinline, noreturn.} =
   raise newException(IndexDefect, "index out of bounds")
 
 proc get(x: Storage, n: JsonNodeId, key: string): JsonNodeId {.inline.} =
-  template hierarchy: untyped = x.jnodes[n.idx]
+  template jnode: untyped = x.jnodes[n.idx]
 
-  var childId = hierarchy.head
+  var childId = jnode.head
   let h = hash(key)
   while childId != invalidId:
-    template childHierarchy: untyped = x.jnodes[childId.idx]
+    template childJNode: untyped = x.jnodes[childId.idx]
     template jkey: untyped = x.jkeys[childId.idx]
     template jstring: untyped = x.jstrings[childId.idx]
 
     assert x.signatures[childId] * {JKey, JString} == {JKey, JString}
     if jkey.hcode == h and jstring.str == key:
-      return childHierarchy.head
-    childId = childHierarchy.next
+      return childJNode.head
+    childId = childJNode.next
   result = invalidId
 
 proc get(x: Storage, n: JsonNodeId, index: int): JsonNodeId {.inline.} =
-  template hierarchy: untyped = x.jnodes[n.idx]
+  template jnode: untyped = x.jnodes[n.idx]
 
-  var childId = hierarchy.head
+  var childId = jnode.head
   var i = index
   while childId != invalidId:
-    template childHierarchy: untyped = x.jnodes[childId.idx]
+    template childJNode: untyped = x.jnodes[childId.idx]
 
     if i == 0: return childId
     dec i
-    childId = childHierarchy.next
+    childId = childJNode.next
   result = invalidId
 
 proc `[]`*(x: JsonNode, key: string): JsonNode {.inline.} =
@@ -348,7 +348,7 @@ proc `{}`*(x: JsonNode, indexes: varargs[int]): JsonNode =
       return JsonNode(id: invalidId)
   result = JsonNode(id: resultId, k: x.k)
 
-proc parseJson(x: var Storage; p: var JsonParser; rawIntegers, rawFloats: bool;
+proc parseJson(x: Storage; p: var JsonParser; rawIntegers, rawFloats: bool;
       parent: JsonNodeId): JsonNodeId =
   case p.tok
   of tkString:

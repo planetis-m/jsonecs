@@ -18,4 +18,4 @@ proc main =
 
 let start = cpuTime()
 main()
-echo "used Mem: ", formatSize getMaxMem(), " time: ", cpuTime() - start, "s"
+echo "time: ", cpuTime() - start, "s"
