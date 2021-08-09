@@ -6,6 +6,7 @@ export jsonnodes
 const
   growthFactor = 2
   defaultInitialLen = 64
+  defaultJObjectLen = 16
 
 type
   JNodeKind* = enum
@@ -34,12 +35,9 @@ type
     isUnquoted: bool
 
   JNodeImpl = object
-    head, tail: JsonNodeId
-    next: JsonNodeId
+    indexes: seq[JsonNodeId]
+    counter: int32
     parent: JsonNodeId
-
-  JKeyImpl = object
-    hcode: Hash
 
   Storage* = ref object
     signatures: SlotTable[set[JNodeKind]]
@@ -48,7 +46,6 @@ type
     jints: DArray[JIntImpl]
     jfloats: DArray[JFloatImpl]
     jstrings: DArray[JStringImpl]
-    jkeys: DArray[JKeyImpl]
     # Mappings
     jnodes: DArray[JNodeImpl]
 
@@ -59,55 +56,88 @@ type
 proc getJsonNodeId(x: Storage): JsonNodeId =
   result = x.signatures.incl({})
 
-iterator queryAll(x: Storage, parent: JsonNodeId,
-    query: set[JNodeKind]): JsonNodeId =
-  template jnode: untyped = x.jnodes[n.idx]
+proc nextTry(h, maxHash: Hash): Hash {.inline.} =
+  result = (h + 1) and maxHash
 
-  var frontier = @[parent]
-  while frontier.len > 0:
-    let n = frontier.pop()
-    if x.signatures[n] * query == query:
-      yield n
-    var childId = jnode.head
-    while childId != invalidId:
-      template childJNode: untyped = x.jnodes[childId.idx]
+template maxHash(j): untyped = high(j.indexes)
+template isFilled(n: JsonNodeId): bool = n != invalidId
 
-      frontier.add(childId)
-      childId = childJNode.next
+proc mustRehash(length, counter: int): bool {.inline.} =
+  assert(length > counter)
+  result = (length * 2 < counter * 3) or (length - counter < 4)
+
+proc enlarge(x: Storage; parent: JsonNodeId) =
+  template jobject: untyped = x.jnodes[parent.idx]
+  template jstring: untyped = x.jstrings[n.idx]
+
+  var s = newSeq[JsonNodeId](jobject.indexes.len * growthFactor)
+  swap(jobject.indexes, s)
+  for i in 0..<s.len:
+    let n = s[i]
+    if isFilled(n):
+      var h = hash(jstring) and maxHash(jobject)
+      while isFilled(jobject.indexes[h]):
+        h = nextTry(h, maxHash(jobject))
+      jobject.indexes[h] = move s[i]
+
+proc get(x: Storage, n: JsonNodeId, index: int): JsonNodeId {.inline.} =
+  template jarray: untyped = x.jnodes[n.idx]
+  if jarray.indexes.len > 0: result = jarray.indexes[index]
+  else: result = invalidId
+
+proc get(x: Storage, parent: JsonNodeId, key: string): JsonNodeId {.inline.} =
+  template jobject: untyped = x.jnodes[parent.idx]
+  template jstring: untyped = x.jstrings[n.idx]
+
+  let origH = hash(key)
+  var h = origH and maxHash(jobject)
+  if jobject.indexes.len > 0:
+    while true:
+      let n = jobject.indexes[h]
+      if not isFilled(n): break
+      if jstring.str == key: return get(x, n, 0)
+      h = nextTry(h, maxHash(jobject))
+  result = invalidId
+
+proc incl(x: Storage, parent, n: JsonNodeId, key: string): JsonNodeId =
+  template jobject: untyped = x.jnodes[parent.idx]
+  template jstring: untyped = x.jstrings[n.idx]
+
+  let origH = hash(key)
+  var h = origH and maxHash(jobject)
+  if jobject.indexes.len > 0:
+    while true:
+      let n = jobject.indexes[h]
+      if not isFilled(n): break
+      if jstring.str == key: return n
+      h = nextTry(h, maxHash(jobject))
+    # Not found, we need to insert it:
+    if mustRehash(jobject.indexes.len, jobject.counter):
+      enlarge(x, n)
+      # Recompute where to insert:
+      h = origH and maxHash(jobject)
+      while true:
+        let n = jobject.indexes[h]
+        if not isFilled(n): break
+        h = nextTry(h, maxHash(jobject))
+  else:
+    setLen(jobject.indexes, defaultJObjectLen)
+    h = origH and maxHash(jobject)
+  result = n
+  jobject.indexes[h] = n
+  inc jobject.counter
 
 template `?=`(name, value): bool = (let name = value; name != invalidId)
-proc append(x: Storage, parentId, n: JsonNodeId) =
-  template jnode: untyped = x.jnodes[n.idx]
-  template parent: untyped = x.jnodes[parentId.idx]
-  template tailSibling: untyped = x.jnodes[tailSiblingId.idx]
-
-  jnode.next = invalidId
-  if tailSiblingId ?= parent.tail:
-    assert tailSibling.next == invalidId
-    tailSibling.next = n
-  parent.tail = n
-  if parent.head == invalidId: parent.head = n
-
-proc removeNode(x: Storage, n: JsonNodeId) =
-  template jnode: untyped = x.jnodes[n.idx]
-  template parent: untyped = x.jnodes[parentId.idx]
-  template tailSibling: untyped = x.jnodes[tailSiblingId.idx]
-
-  if parentId ?= jnode.parent:
-    if n == parent.head:
-      parent.head = jnode.next
-      if tailSiblingId ?= parent.tail:
-        if tailSibling.next == n:
-          tailSibling.next = parent.head
+proc append(x: Storage, parent, n: JsonNodeId) =
+  template jnode: untyped = x.jnodes[parent.idx]
+  jnode.indexes.add n
 
 proc delete*(x: Storage, n: JsonNodeId) =
-  ## Deletes `x[key]`.
-  var toDelete: seq[JsonNodeId]
-  for entity in queryAll(x, n, {JNode}):
-    removeNode(x, entity)
-    toDelete.add(entity)
-  for entity in toDelete.items:
-    x.signatures.del(entity)
+  template jnode: untyped = x.jnodes[n.idx]
+  if x.signatures[n] * {JArray, JObject} != {}:
+    for j in jnode.indexes:
+      delete(x, j)
+  x.signatures.del(n)
 
 template mixBody(has) =
   x.signatures[n].incl has
@@ -121,10 +151,9 @@ proc reserve[T](x: var DArray[T]; index: int) {.inline.} =
 proc mixJNode(x: Storage, n: JsonNodeId, parent = invalidId) =
   mixBody JNode
   reserve(x.jnodes, n.idx)
-  x.jnodes[n.idx] = JNodeImpl(
-    head: invalidId, tail: invalidId, next: invalidId,
-    parent: parent)
-  if parent != invalidId: append(x, parent, n)
+  x.jnodes[n.idx] = JNodeImpl(parent: parent)
+  if parent != invalidId:
+    if x.signatures[parent] * {JArray, JKey} != {}: append(x, parent, n)
 
 proc mixJNull(x: Storage, n: JsonNodeId) =
   mixBody JNull
@@ -155,12 +184,17 @@ proc mixJRawNumber(x: Storage, n: JsonNodeId, s: sink string) =
   reserve(x.jstrings, n.idx)
   x.jstrings[n.idx] = JStringImpl(str: s, isUnquoted: true)
 
+proc raiseDuplicateKeyError(key: string) {.noinline, noreturn.} =
+  raise newException(KeyError, "key already exists in object: " & key)
+
 proc mixJKey(x: Storage, n: JsonNodeId, s: sink string, parent = invalidId) =
   mixBody JKey
-  reserve(x.jkeys, n.idx)
-  x.jkeys[n.idx] = JKeyImpl(hcode: hash(s))
   mixJString(x, n, s)
   mixJNode(x, n, parent)
+  if parent != invalidId:
+    assert JObject in x.signatures[parent]
+    if incl(x, parent, n, s) != n: # Duplicate keys!
+      raiseDuplicateKeyError(s)
 
 proc mixJObject(x: Storage, n: JsonNodeId, parent = invalidId) =
   mixBody JObject
@@ -171,6 +205,15 @@ proc mixJArray(x: Storage, n: JsonNodeId, parent = invalidId) =
   mixJNode(x, n, parent)
 
 proc isNil*(x: JsonNode): bool {.inline.} = x.id == invalidId or x.k == nil
+
+proc len*(x: JsonNode): int =
+  if x.isNil: return
+  let sign = x.k.signatures[x.id]
+  if JArray in sign:
+    result = x.k.jnodes[x.id.idx].indexes.len
+  elif JObject in sign:
+    result = x.k.jnodes[x.id.idx].counter
+  else: discard
 
 proc kind*(x: JsonNode): JNodeKind =
   assert not x.isNil
@@ -195,28 +238,22 @@ proc kind*(x: JsonNode): JNodeKind =
 iterator items*(x: JsonNode): JsonNode =
   ## Iterator for the items of `x`. `x` has to be a JArray.
   assert x.isNil or JArray in x.k.signatures[x.id]
-  template jnode: untyped = x.k.jnodes[x.id.idx]
+  template jarray: untyped = x.k.jnodes[x.id.idx]
 
-  var childId = jnode.head
-  while childId != invalidId:
-    template childJNode: untyped = x.k.jnodes[childId.idx]
-
-    yield JsonNode(id: childId, k: x.k)
-    childId = childJNode.next
+  for child in jarray.indexes.items:
+    yield JsonNode(id: child, k: x.k)
 
 iterator pairs*(x: JsonNode): (lent string, JsonNode) =
   ## Iterator for the pairs of `x`. `x` has to be a JObject.
   assert x.isNil or JObject in x.k.signatures[x.id]
-  template jnode: untyped = x.k.jnodes[x.id.idx]
+  template jobject: untyped = x.k.jnodes[x.id.idx]
 
-  var childId = jnode.head
-  while childId != invalidId:
-    template childJNode: untyped = x.k.jnodes[childId.idx]
-    template jstring: untyped = x.k.jstrings[childId.idx]
+  for child in jobject.indexes.items:
+    if isFilled(child):
+      template jstring: untyped = x.k.jstrings[child.idx]
 
-    assert x.k.signatures[childId] * {JKey, JString} == {JKey, JString}
-    yield (jstring.str, JsonNode(id: childJNode.head, k: x.k))
-    childId = childJNode.next
+      assert x.k.signatures[child] * {JKey, JString} == {JKey, JString}
+      yield (jstring.str, JsonNode(id: get(x.k, child, 0), k: x.k))
 
 proc getStr*(x: JsonNode, default: string = ""): string =
   ## Retrieves the string value of a `JString`.
@@ -264,35 +301,6 @@ proc raiseKeyError(key: string) {.noinline, noreturn.} =
 
 proc raiseIndexDefect {.noinline, noreturn.} =
   raise newException(IndexDefect, "index out of bounds")
-
-proc get(x: Storage, n: JsonNodeId, key: string): JsonNodeId {.inline.} =
-  template jnode: untyped = x.jnodes[n.idx]
-
-  var childId = jnode.head
-  let h = hash(key)
-  while childId != invalidId:
-    template childJNode: untyped = x.jnodes[childId.idx]
-    template jkey: untyped = x.jkeys[childId.idx]
-    template jstring: untyped = x.jstrings[childId.idx]
-
-    assert x.signatures[childId] * {JKey, JString} == {JKey, JString}
-    if jkey.hcode == h and jstring.str == key:
-      return childJNode.head
-    childId = childJNode.next
-  result = invalidId
-
-proc get(x: Storage, n: JsonNodeId, index: int): JsonNodeId {.inline.} =
-  template jnode: untyped = x.jnodes[n.idx]
-
-  var childId = jnode.head
-  var i = index
-  while childId != invalidId:
-    template childJNode: untyped = x.jnodes[childId.idx]
-
-    if i == 0: return childId
-    dec i
-    childId = childJNode.next
-  result = invalidId
 
 proc `[]`*(x: JsonNode, key: string): JsonNode {.inline.} =
   ## Gets a field from a `JObject`, which must not be nil.
@@ -435,7 +443,6 @@ proc parseJson*(s: Stream, filename: string = "";
         jints: newDArray[JIntImpl](defaultInitialLen),
         jfloats: newDArray[JFloatImpl](defaultInitialLen),
         jstrings: newDArray[JStringImpl](defaultInitialLen),
-        jkeys: newDArray[JKeyImpl](defaultInitialLen),
         jnodes: newDArray[JNodeImpl](defaultInitialLen)
       )
     result.id = parseJson(result.k, p, rawIntegers, rawFloats, invalidId)
