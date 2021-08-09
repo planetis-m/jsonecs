@@ -70,7 +70,8 @@ proc enlarge(x: Storage; parent: JsonNodeId) =
   template jobject: untyped = x.jnodes[parent.idx]
   template jstring: untyped = x.jstrings[n.idx]
 
-  var s = newSeq[JsonNodeId](jobject.indexes.len * growthFactor)
+  var s: seq[JsonNodeId]
+  grow(s, jobject.indexes.len * growthFactor, invalidId)
   swap(jobject.indexes, s)
   for i in 0..<s.len:
     let n = s[i]
@@ -121,14 +122,13 @@ proc incl(x: Storage, parent, n: JsonNodeId, key: string): JsonNodeId =
         if not isFilled(n): break
         h = nextTry(h, maxHash(jobject))
   else:
-    setLen(jobject.indexes, defaultJObjectLen)
+    jobject.indexes.grow(defaultJObjectLen, invalidId)
     h = origH and maxHash(jobject)
   result = n
   jobject.indexes[h] = n
   inc jobject.counter
 
-template `?=`(name, value): bool = (let name = value; name != invalidId)
-proc append(x: Storage, parent, n: JsonNodeId) =
+proc append(x: Storage, parent, n: JsonNodeId) {.inline.} =
   template jnode: untyped = x.jnodes[parent.idx]
   jnode.indexes.add n
 
