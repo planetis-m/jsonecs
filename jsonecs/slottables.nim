@@ -1,4 +1,7 @@
-import jsonnodes
+import jsonnodeids
+
+const
+  defaultInitialCap = 64
 
 type
   Entry*[T] = tuple
@@ -10,10 +13,10 @@ type
     slots: seq[JsonNodeId]
     data: seq[Entry[T]]
 
-proc newSlotTableOfCap*[T](capacity: Natural): SlotTable[T] =
+proc newSlotTableOfCap*[T](cap = defaultInitialCap.Natural): SlotTable[T] =
   result = SlotTable[T](
-    data: newSeqOfCap[Entry[T]](capacity),
-    slots: newSeqOfCap[JsonNodeId](capacity),
+    data: newSeqOfCap[Entry[T]](cap),
+    slots: newSeqOfCap[JsonNodeId](cap),
     freeHead: 0
   )
 

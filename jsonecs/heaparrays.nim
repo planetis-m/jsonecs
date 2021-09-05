@@ -1,34 +1,52 @@
-import jsonnodes
+import jsonnodeids
 from typetraits import supportsCopyMem
 
+const
+  growthFactor = 2
+  defaultInitialLen = 64
+
 type
-  DArray*[T] = object
+  SecTable*[T] = object
     len: int
-    data: ptr UncheckedArray[T]
+    p: ptr UncheckedArray[T]
 
-proc `=destroy`*[T](x: var DArray[T]) =
-  if x.data != nil:
+proc `=destroy`*[T](x: var SecTable[T]) =
+  if x.p != nil:
     when not supportsCopyMem(T):
-      for i in 0..<x.len: `=destroy`(x[i])
-    deallocShared(x.data)
-proc `=copy`*[T](dest: var DArray[T], src: DArray[T]) {.error.}
+      for i in 0..<x.len: `=destroy`(x.p[i])
+    deallocShared(x.p)
+proc `=copy`*[T](dest: var SecTable[T], src: SecTable[T]) {.error.}
 
-proc newDArray*[T](len = 0.Natural): DArray[T] =
+proc newSecTable*[T](len = defaultInitialLen.Natural): SecTable[T] =
   when not supportsCopyMem(T):
-    result.data = cast[typeof(result.data)](allocShared0(len * sizeof(T)))
+    result.p = cast[typeof(result.p)](allocShared0(len * sizeof(T)))
   else:
-    result.data = cast[typeof(result.data)](allocShared(len * sizeof(T)))
+    result.p = cast[typeof(result.p)](allocShared(len * sizeof(T)))
   result.len = len
 
-proc grow*[T](s: var DArray[T], newLen: Natural) =
-  if s.len < newLen:
-    when not supportsCopyMem(T):
-      s.data = cast[typeof(s.data)](reallocShared0(s.data, s.len * sizeof(T), newLen * sizeof(T)))
+proc grow*[T](s: var SecTable[T], newLen: Natural) =
+  if s.p == nil:
+    # can't mutate a literal, so we need a fresh copy here:
+    when compileOption("threads"):
+      s.p = cast[typeof(s.p)](allocShared0(newLen))
     else:
-      s.data = cast[typeof(s.data)](reallocShared(s.data, newLen * sizeof(T)))
+      s.p = cast[typeof(s.p)](alloc0(newLen))
     s.len = newLen
+  else:
+    if s.len < newLen:
+      when not supportsCopyMem(T):
+        s.p = cast[typeof(s.p)](reallocShared0(s.p, s.len * sizeof(T), newLen * sizeof(T)))
+      else:
+        s.p = cast[typeof(s.p)](reallocShared(s.p, newLen * sizeof(T)))
+      s.len = newLen
 
-proc len*[T](s: DArray[T]): int {.inline.} = s.len
+proc mustGrow[T](x: var SecTable[T]; i: int): bool {.inline.} =
+  result = x.len - i < 5
+
+proc reserve[T](x: var SecTable[T]; i: int) {.inline.} =
+  if mustGrow(x, i): grow(x, x.len * growthFactor)
+
+proc len*[T](s: SecTable[T]): int {.inline.} = s.len
 
 proc raiseRangeDefect {.noinline, noreturn.} =
   raise newException(RangeDefect, "array access out of bounds")
@@ -36,26 +54,25 @@ proc raiseRangeDefect {.noinline, noreturn.} =
 template checkArrayAccess() =
   when compileOption("boundChecks"):
     {.line.}:
-      if x.data == nil or i >= x.len:
+      if x.p == nil or i.idx >= x.len:
         raiseRangeDefect()
 
-template get(x, i) =
+proc `[]`*[T](x: SecTable[T]; i: JsonNodeId): lent T =
   checkArrayAccess()
-  x.data[i]
+  x.p[i.idx]
 
-proc `[]`*[T](x: DArray[T]; i: Natural): lent T =
-  get(x, i)
-proc `[]`*[T](x: var DArray[T]; i: Natural): var T =
-  get(x, i)
-
-proc `[]=`*[T](x: var DArray[T]; i: Natural; y: sink T) =
+proc `[]`*[T](x: var SecTable[T]; i: JsonNodeId): var T =
   checkArrayAccess()
-  x.data[i] = y
+  x.p[i.idx]
 
-proc clear*[T](x: DArray[T]) =
+proc `[]=`*[T](x: var SecTable[T]; i: JsonNodeId; y: sink T) =
+  reserve(x, i.idx)
+  x.p[i.idx] = y
+
+proc clear*[T](x: SecTable[T]) =
   when not supportsCopyMem(T):
-    if x.data != nil:
-      for i in 0..<x.len: reset(x[i])
+    if x.p != nil:
+      for i in 0..<x.len: reset(x.p[i])
 
 template toOpenArray*(x, first, last: typed): untyped =
-  toOpenArray(x.data, first, last)
+  toOpenArray(x.p, first, last)
