@@ -13,6 +13,7 @@ type
   JNodeKind* = enum
     JNull
     JBool
+    JTrue
     JInt
     JFloat
     JString
@@ -21,9 +22,6 @@ type
     JKey
     JRawNumber # isUnquoted
     JNode
-
-  JBoolImpl = object
-    bval: bool
 
   JIntImpl = object
     num: BiggestInt
@@ -49,7 +47,6 @@ type
   Storage* = object
     signatures: SlotTable[set[JNodeKind]]
     # Atoms
-    jbools: SecTable[JBoolImpl]
     jints: SecTable[JIntImpl]
     jfloats: SecTable[JFloatImpl]
     jstrings: SecTable[JStringImpl]
@@ -176,9 +173,12 @@ proc mixJNull(x: var Storage, n: JsonNodeId) =
   mixBody JNull
   mixJNode(x, n, JNull)
 
-proc mixJBool(x: var Storage, n: JsonNodeId, b: bool) =
+proc mixJTrue(x: var Storage, n: JsonNodeId) =
+  mixBody {JBool, JTrue}
+  mixJNode(x, n, JBool)
+
+proc mixJFalse(x: var Storage, n: JsonNodeId) =
   mixBody JBool
-  x.jbools[n] = JBoolImpl(bval: b)
   mixJNode(x, n, JBool)
 
 proc mixJInt(x: var Storage, n: JsonNodeId, i: BiggestInt) =
@@ -291,7 +291,7 @@ proc getBool*(x: JsonNode, default: bool = false): bool =
   ## Retrieves the bool value of a `JBool`.
   ##
   ## Returns `default` if `n` is not a `JBool`, or if `n` is nil.
-  if x.isNil or x.kind == JBool: result = x.k.jbools[x.id].bval
+  if x.isNil or x.kind == JBool: result = JTrue in x.k.signatures[x.id]
   else: result = default
 
 proc contains*(x: JsonNode, key: string): bool =
@@ -432,11 +432,11 @@ proc parseJson(x: var Storage; p: var JsonParser; rawIntegers, rawFloats: bool):
     discard getTok(p)
   of tkTrue:
     result = getJsonNodeId(x)
-    mixJBool(x, result, true)
+    mixJTrue(x, result)
     discard getTok(p)
   of tkFalse:
     result = getJsonNodeId(x)
-    mixJBool(x, result, false)
+    mixJFalse(x, result)
     discard getTok(p)
   of tkNull:
     result = getJsonNodeId(x)
@@ -493,7 +493,6 @@ proc parseJson*(s: Stream, filename: string = "";
     new(result.k)
     result.k[] = Storage(
         signatures: newSlotTableOfCap[set[JNodeKind]](),
-        jbools: newSecTable[JBoolImpl](),
         jints: newSecTable[JIntImpl](),
         jfloats: newSecTable[JFloatImpl](),
         jstrings: newSecTable[JStringImpl](),
