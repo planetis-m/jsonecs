@@ -23,11 +23,8 @@ type
     JRawNumber # isUnquoted
     JNode
 
-  JIntImpl = object
+  JNumImpl = object
     num: BiggestInt
-
-  JFloatImpl = object
-    fnum: float
 
   JStringImpl = object
     str: string
@@ -47,8 +44,7 @@ type
   Storage* = object
     signatures: SlotTable[set[JNodeKind]]
     # Atoms
-    jints: SecTable[JIntImpl]
-    jfloats: SecTable[JFloatImpl]
+    jnums: SecTable[JNumImpl]
     jstrings: SecTable[JStringImpl]
     # Mappings
     jnodes: SecTable[JNodeImpl]
@@ -183,12 +179,12 @@ proc mixJFalse(x: var Storage, n: JsonNodeId) =
 
 proc mixJInt(x: var Storage, n: JsonNodeId, i: BiggestInt) =
   mixBody JInt
-  x.jints[n] = JIntImpl(num: i)
+  x.jnums[n] = JNumImpl(num: i)
   mixJNode(x, n, JInt)
 
 proc mixJFloat(x: var Storage, n: JsonNodeId, f: float) =
   mixBody JFloat
-  x.jfloats[n] = JFloatImpl(fnum: f)
+  x.jnums[n] = JNumImpl(num: cast[BiggestInt](f))
   mixJNode(x, n, JFloat)
 
 proc mixJString(x: var Storage, n: JsonNodeId, s: sink string) =
@@ -264,14 +260,14 @@ proc getInt*(x: JsonNode, default: int = 0): int =
   ## Retrieves the int value of a `JInt`.
   ##
   ## Returns `default` if `x` is not a `JInt`, or if `x` is nil.
-  if x.isNil or x.kind == JInt: result = int(x.k.jints[x.id].num)
+  if x.isNil or x.kind == JInt: result = int(x.k.jnums[x.id].num)
   else: result = default
 
 proc getBiggestInt*(x: JsonNode, default: BiggestInt = 0): BiggestInt =
   ## Retrieves the BiggestInt value of a `JInt`.
   ##
   ## Returns `default` if `x` is not a `JInt`, or if `x` is nil.
-  if x.isNil or x.kind == JInt: result = x.k.jints[x.id].num
+  if x.isNil or x.kind == JInt: result = x.k.jnums[x.id].num
   else: result = default
 
 proc getFloat*(x: JsonNode, default: float = 0.0): float =
@@ -281,9 +277,9 @@ proc getFloat*(x: JsonNode, default: float = 0.0): float =
   if x.isNil: return default
   case x.kind
   of JFloat:
-    result = x.k.jfloats[x.id].fnum
+    result = cast[float](x.k.jnums[x.id].num)
   of JInt:
-    result = float(x.k.jints[x.id].num)
+    result = float(x.k.jnums[x.id].num)
   else:
     result = default
 
@@ -493,8 +489,7 @@ proc parseJson*(s: Stream, filename: string = "";
     new(result.k)
     result.k[] = Storage(
         signatures: newSlotTableOfCap[set[JNodeKind]](),
-        jints: newSecTable[JIntImpl](),
-        jfloats: newSecTable[JFloatImpl](),
+        jnums: newSecTable[JNumImpl](),
         jstrings: newSecTable[JStringImpl](),
         jnodes: newSecTable[JNodeImpl]()
       )
@@ -527,6 +522,10 @@ when isMainModule:
       for node2 in items(node1):
         assert node2.getInt() == vals[i]
         inc i
+  block: # bools and floats
+    let testJson = parseJson"""[true, 3.6]"""
+    assert testJson[0].kind == JBool and testJson[0].getBool == true
+    assert testJson[1].kind == JFloat and testJson[1].getFloat == 3.6
   block: # key iterator order
     let testJson = parseJson"""{"name": "Isaac", "books": ["Robot Dreams"],
         "details": {"age": 35, "pi": 3.1415}}"""
